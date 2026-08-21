@@ -1,0 +1,28 @@
+{
+  "name": "tau-mirror",
+  "version": "1.1.0-local",
+  "description": "Web UI that mirrors your Pi terminal session in the browser",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "coding-agent",
+    "web-ui",
+    "mirror"
+  ],
+  "author": "deflating",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deflating/tau.git"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/mirror-server.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "qrcode": "^1.5.0"
+  }
+}
