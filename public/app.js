@@ -1129,7 +1129,6 @@ function formatProvider(provider) {
     'newapi-zhyxulei': 'NewAPI',
     'tavern-openai': 'Tavern',
     'newapi-futureppo': 'FuturePPO',
-    'hfy': 'HFY',
   };
   const relay = relayProviders.find(item => item.id === provider);
   return names[provider] || relay?.name || provider || t('unknownProvider');

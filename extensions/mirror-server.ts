@@ -164,7 +164,7 @@ function writeModelsFile(data: { providers: Record<string, any> }) {
 }
 
 function normalizeModelId(id: unknown): string {
-  // Keep leading slashes (HFY /CN/...) and internal slashes exactly.
+  // Keep leading slashes (/CN/...) and internal slashes exactly.
   return String(id ?? "").trim();
 }
 
@@ -429,7 +429,7 @@ export default function (pi: ExtensionAPI) {
   // Providers whose /v1/models response is the authoritative model list.
   // Tau re-fetches it on refresh, registers discovered models back into Pi, and
   // drops stale entries so the web list follows the relay exactly.
-  // Custom 中转站 from models.json are included automatically so HFY /CN models
+  // Custom 中转站 from models.json are included automatically so /CN models
   // and newly added relays stay selectable without editing this set.
   const LIVE_MODEL_SYNC_ALWAYS = new Set(["newapi-futureppo", "ccswitch-cl"]);
   const MANUAL_MODEL_PROVIDERS = new Set(["tavern-openai", "newapi-zhyxulei"]);

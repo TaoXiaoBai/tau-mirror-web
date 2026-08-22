@@ -21,7 +21,7 @@ This repository is a maintained fork focused on:
 
 - Visible model / relay errors in the chat
 - Adding OpenAI-compatible **relay providers** from the web UI
-- Model IDs that start with `/CN/...` (HFY and similar Chinese relays)
+- Model IDs that start with `/CN/...`
 - Interface language that follows the OS / browser locale
 
 ## Install
