@@ -90,9 +90,10 @@
               </div>
             </div>
           </div>
-          <div class="status">
+          <div class="status" id="status">
             <span class="status-indicator" id="status-indicator"></span>
             <span class="status-text" id="status-text" data-i18n="connecting">Connecting…</span>
+            <span class="status-elapsed hidden" id="status-elapsed"></span>
           </div>
           <button class="icon-btn" id="file-sidebar-toggle" title="Project files" aria-label="Open files" data-i18n-title="projectFiles" data-i18n-aria="openFiles">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
@@ -127,11 +128,6 @@
 
       <!-- Input Area -->
       <div class="input-area">
-        <div class="work-status hidden" id="work-status" aria-live="polite">
-          <span class="work-status-dot"></span>
-          <span class="work-status-text" id="work-status-text"></span>
-          <span class="work-status-elapsed" id="work-status-elapsed"></span>
-        </div>
         <button class="mobile-context-toggle" id="mobile-context-toggle">
           <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 5L5 1L9 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>

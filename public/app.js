@@ -41,9 +41,8 @@ const sidebarOverlay = document.getElementById('sidebar-overlay');
 
 const refreshSessionsBtn = document.getElementById('refresh-sessions-btn');
 const sessionSearchInput = document.getElementById('session-search-input');
-const workStatusEl = document.getElementById('work-status');
-const workStatusText = document.getElementById('work-status-text');
-const workStatusElapsed = document.getElementById('work-status-elapsed');
+const statusEl = document.getElementById('status');
+const statusElapsed = document.getElementById('status-elapsed');
 let workPhase = 'idle';
 let workStartedAt = 0;
 let workElapsedTimer = null;
@@ -2263,6 +2262,7 @@ function workStatusCopy(phase) {
 function setWorkPhase(phase) {
   if (phase === workPhase && phase !== 'tool') return;
   workPhase = phase;
+  const inputArea = document.querySelector('.input-area');
   if (phase === 'idle') {
     workStartedAt = 0;
     activeToolName = '';
@@ -2270,28 +2270,29 @@ function setWorkPhase(phase) {
       clearInterval(workElapsedTimer);
       workElapsedTimer = null;
     }
-    workStatusEl?.classList.add('hidden');
-    workStatusEl?.classList.remove('thinking', 'writing', 'tool', 'starting');
-    document.querySelector('.input-area')?.classList.remove('working');
-    if (workStatusText) workStatusText.textContent = '';
-    if (workStatusElapsed) workStatusElapsed.textContent = '';
+    statusEl?.classList.remove('working', 'thinking', 'writing', 'tool', 'starting');
+    inputArea?.classList.remove('working');
+    statusElapsed?.classList.add('hidden');
+    if (statusElapsed) statusElapsed.textContent = '';
     if (hasFocus) document.title = originalTitle;
     return;
   }
   if (!workStartedAt) workStartedAt = Date.now();
-  workStatusEl?.classList.remove('hidden', 'thinking', 'writing', 'tool', 'starting');
-  workStatusEl?.classList.add(phase);
-  document.querySelector('.input-area')?.classList.add('working');
-  if (workStatusText) workStatusText.textContent = workStatusCopy(phase);
-  if (workStatusElapsed) workStatusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
+  statusEl?.classList.remove('thinking', 'writing', 'tool', 'starting');
+  statusEl?.classList.add('working', phase);
+  inputArea?.classList.add('working');
   if (statusText) {
     statusText.textContent = workStatusCopy(phase) || t('piWorking');
     statusText.title = t('escStop');
   }
+  if (statusElapsed) {
+    statusElapsed.classList.remove('hidden');
+    statusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
+  }
   if (!workElapsedTimer) {
     workElapsedTimer = setInterval(() => {
-      if (!workStartedAt || !workStatusElapsed) return;
-      workStatusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
+      if (!workStartedAt || !statusElapsed) return;
+      statusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
     }, 1000);
   }
   if (!hasFocus) document.title = `● ${workStatusCopy(phase)} · ${originalTitle}`;
@@ -2369,8 +2370,10 @@ function updateConnectionStatus(status) {
   statusIndicator.className = `status-indicator ${status}`;
 
   if (status === 'connected') {
-    statusText.textContent = tailscaleUrl ? `${t('connected')} · TS` : t('connected');
-    statusText.title = tailscaleUrl || t('connectedPi');
+    if (workPhase === 'idle') {
+      statusText.textContent = tailscaleUrl ? `${t('connected')} · TS` : t('connected');
+      statusText.title = tailscaleUrl || t('connectedPi');
+    }
     if (previous === 'disconnected') showToast(t('reconnected'), 'success', 2200);
     if (!tailscaleUrl) {
       // Delay health check to avoid competing with mirror_sync during reconnect

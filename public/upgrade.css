@@ -582,62 +582,38 @@ textarea {
   box-shadow: none;
 }
 
-.work-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 2px 8px;
-  padding: 7px 11px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--accent) 9%, var(--tau-surface-strong));
-  color: var(--text-primary);
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.work-status.hidden {
-  display: none;
-}
-
-.work-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
-  animation: workPulse 1.4s ease-out infinite;
-  flex-shrink: 0;
-}
-
-.work-status.thinking .work-status-dot {
-  background: color-mix(in srgb, var(--warning) 80%, var(--accent));
-}
-
-.work-status.tool .work-status-dot {
-  background: var(--success);
-}
-
-.work-status-text {
+.status.working {
   min-width: 0;
+  max-width: min(34vw, 220px);
+  flex-shrink: 1;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--tau-surface));
+  color: var(--text-primary);
+}
+
+.status.working .status-text {
+  display: inline;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 620;
 }
 
-.input-area.working {
-  padding-top: 10px;
-}
-
-.work-status-elapsed {
-  margin-left: auto;
+.status-elapsed {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 10px;
+  flex-shrink: 0;
 }
 
-@keyframes workPulse {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
-  70% { box-shadow: 0 0 0 7px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+.status-elapsed.hidden {
+  display: none;
+}
+
+.input-area.working #chat-form {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-hover));
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12), 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .pill {
@@ -1233,6 +1209,15 @@ textarea {
   }
 
   .status-text {
+    display: none;
+  }
+
+  .status.working .status-text {
+    display: inline;
+    max-width: 22vw;
+  }
+
+  .status.working .status-elapsed {
     display: none;
   }
 
