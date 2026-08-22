@@ -2496,7 +2496,7 @@ toggleAuth.addEventListener('click', async () => {
 });
 
 // ═══════════════════════════════════════
-// Relay / 中转站 settings
+// Provider settings
 // ═══════════════════════════════════════
 
 let editingRelayId = null;

@@ -19,8 +19,8 @@ Tau runs **inside** your existing Pi process. There is no extra server to start.
 
 This repository is a maintained fork focused on:
 
-- Visible model / relay errors in the chat
-- Adding OpenAI-compatible **relay providers** from the web UI
+- Visible model / provider errors in the chat
+- Adding OpenAI-compatible **providers** from the web UI
 - Model IDs that start with `/CN/...`
 - Interface language that follows the OS / browser locale
 
@@ -63,9 +63,9 @@ pi
 - Failed model calls show up in the thread, not as an empty bubble
 - Queue a follow-up while Pi is still answering
 
-### Relays
+### Providers
 - Open the **model menu** (top left)
-- Each relay group has **Edit**; the footer is **Add a relay**
+- Each provider group has **Edit**; the footer is **Add a provider**
 - Test the connection, then save and sync `/v1/models`
 - Leading slashes in model IDs are kept (`/CN/gpt-4o` stays `/CN/gpt-4o`)
 
@@ -103,7 +103,7 @@ Optional block in `~/.pi/agent/settings.json`:
 
 Commands: `/tau-stop`, `/tau-start`, `/qr`, `/tau`.
 
-Relay providers are stored in `~/.pi/agent/models.json`. Saving from the web UI writes that file and registers the models with Pi. Restart Pi after upgrading the extension so the new backend commands load.
+Providers are stored in `~/.pi/agent/models.json`. Saving from the web UI writes that file and registers the models with Pi. Restart Pi after upgrading the extension so the new backend commands load.
 
 ## How it works
 

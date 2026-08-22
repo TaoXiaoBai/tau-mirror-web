@@ -429,7 +429,7 @@ export default function (pi: ExtensionAPI) {
   // Providers whose /v1/models response is the authoritative model list.
   // Tau re-fetches it on refresh, registers discovered models back into Pi, and
   // drops stale entries so the web list follows the relay exactly.
-  // Custom 中转站 from models.json are included automatically so /CN models
+  // Custom providers from models.json are included automatically so /CN models
   // and newly added relays stay selectable without editing this set.
   const LIVE_MODEL_SYNC_ALWAYS = new Set(["newapi-futureppo", "ccswitch-cl"]);
   const MANUAL_MODEL_PROVIDERS = new Set(["tavern-openai", "newapi-zhyxulei"]);
@@ -1458,7 +1458,7 @@ export default function (pi: ExtensionAPI) {
             const sameProvider = models.filter((m: any) => m.provider === wantedProvider).map((m: any) => m.id);
             sendTo(ws, error("set_model", sameProvider.length
               ? `没有找到模型 ${wantedProvider} :: ${wantedId}`
-              : `没有找到模型 ${wantedProvider} :: ${wantedId}（该中转站尚未加载）`));
+              : `没有找到模型 ${wantedProvider} :: ${wantedId}（该供应商尚未加载）`));
             break;
           }
           const defaults = captureDefaultPreferences();
@@ -1675,7 +1675,7 @@ export default function (pi: ExtensionAPI) {
               models: records.slice(0, 40).map((item) => ({ id: item.id, name: item.name })),
             }));
           } catch (e: any) {
-            sendTo(ws, error("test_provider", e?.name === "AbortError" ? "连接中转站超时" : (e?.message || "无法连接中转站")));
+            sendTo(ws, error("test_provider", e?.name === "AbortError" ? "连接供应商超时" : (e?.message || "无法连接供应商")));
           }
           break;
         }
@@ -1683,7 +1683,7 @@ export default function (pi: ExtensionAPI) {
         case "save_provider": {
           const id = String(command.id || "").trim();
           if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(id)) {
-            sendTo(ws, error("save_provider", "中转站 ID 只能用字母开头，并包含字母、数字、下划线或短横线"));
+            sendTo(ws, error("save_provider", "供应商 ID 只能用字母开头，并包含字母、数字、下划线或短横线"));
             break;
           }
           if (BUILTIN_PROVIDERS.has(id)) {
@@ -1779,12 +1779,12 @@ export default function (pi: ExtensionAPI) {
         case "delete_provider": {
           const id = String(command.id || "").trim();
           if (!id) {
-            sendTo(ws, error("delete_provider", "缺少中转站 ID"));
+            sendTo(ws, error("delete_provider", "缺少供应商 ID"));
             break;
           }
           const file = readModelsFile();
           if (!file.providers[id]) {
-            sendTo(ws, error("delete_provider", `没有找到中转站 ${id}`));
+            sendTo(ws, error("delete_provider", `没有找到供应商 ${id}`));
             break;
           }
           delete file.providers[id];
@@ -1809,7 +1809,7 @@ export default function (pi: ExtensionAPI) {
           const file = readModelsFile();
           const cfg = file.providers[provider];
           if (!cfg) {
-            sendTo(ws, error("save_model_context", `没有找到中转站 ${provider}`));
+            sendTo(ws, error("save_model_context", `没有找到供应商 ${provider}`));
             break;
           }
           const reset = command.reset === true || command.contextWindow === null || command.contextWindow === "";
