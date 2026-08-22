@@ -129,7 +129,7 @@ function humanizeError(error) {
   if (/Connection lost|disconnected/i.test(message)) return t('errDisconnected');
   if (/Session file is invalid|outside the Pi session directory/i.test(message)) return t('errBadSession');
   if (/No context available/i.test(message)) return t('errNoContext');
-  if (/Unknown command:\s*(get_providers|save_provider|delete_provider|test_provider)/i.test(message)) return t('errNeedRestart');
+  if (/Unknown command:\s*(get_providers|save_provider|delete_provider|test_provider|save_model_context)/i.test(message)) return t('errNeedRestart');
   if (/Unknown command/i.test(message)) return t('errNeedRestart');
   return message;
 }
@@ -1148,8 +1148,17 @@ function formatContextSize(value) {
 }
 
 function contextSourceCopy(model) {
+  if (model?.contextSource === 'custom') {
+    return { short: t('ctxCustom'), detail: t('ctxCustomDetail') };
+  }
   if (model?.contextSource === 'provider') {
     return { short: t('ctxProvider'), detail: t('ctxProviderDetail') };
+  }
+  if (model?.contextSource === 'official') {
+    return { short: t('ctxOfficial'), detail: t('ctxOfficialDetail') };
+  }
+  if (model?.contextSource === 'config') {
+    return { short: t('ctxConfig'), detail: t('ctxConfigDetail') };
   }
   if (model?.contextSource === 'unknown-error') {
     return { short: t('ctxUnknown'), detail: t('ctxUnknownErr') };
@@ -1228,10 +1237,12 @@ async function fetchModelInfo(options = {}) {
     updateThinkingBtn();
 
     if (options.showStatus) {
+      const customCount = availableModels.filter(model => model.contextSource === 'custom').length;
       const liveCount = availableModels.filter(model => model.contextSource === 'provider').length;
+      const officialCount = availableModels.filter(model => model.contextSource === 'official').length;
       const unknownCount = availableModels.filter(model => String(model.contextSource || '').startsWith('unknown')).length;
-      const detail = liveCount || unknownCount
-        ? t('modelsLive', { live: liveCount, unknown: unknownCount })
+      const detail = customCount || liveCount || officialCount || unknownCount
+        ? t('modelsLive', { custom: customCount, live: liveCount, official: officialCount, unknown: unknownCount })
         : '';
       showToast(t('modelsLoaded', { n: availableModels.length, detail }), 'success', 3600);
     }
@@ -1374,10 +1385,12 @@ function openModelDropdown() {
     const source = contextSourceCopy(model);
     const contextBadge = document.createElement('span');
     contextBadge.className = `model-context-badge context-${model.contextSource || (model.contextWindow ? 'pi-registry' : 'unknown')}`;
+    contextBadge.dataset.action = 'edit-context';
     contextBadge.textContent = model.contextWindow
       ? `${formatContextSize(model.contextWindow)} · ${source.short}`
       : source.short;
-    contextBadge.title = source.detail;
+    contextBadge.title = `${source.detail}${t('ctxClickEdit')}`;
+    contextBadge.setAttribute('role', 'button');
     meta.appendChild(contextBadge);
     if (model.input?.includes('image')) {
       const badge = document.createElement('span');
@@ -1465,6 +1478,14 @@ function openModelDropdown() {
   }
 
   itemsContainer.addEventListener('click', async (event) => {
+    const contextBadge = event.target.closest('[data-action="edit-context"]');
+    if (contextBadge) {
+      event.stopPropagation();
+      const item = contextBadge.closest('.model-dropdown-item');
+      const model = availableModels.find(entry => getModelKey(entry) === item?.dataset.modelKey);
+      if (model) await editModelContext(model);
+      return;
+    }
     const edit = event.target.closest('.model-dropdown-provider-edit');
     if (edit) {
       event.stopPropagation();
@@ -2232,12 +2253,12 @@ function updateTokenUsage() {
     } else if (pct >= 60) {
       tokenUsageEl.classList.add('warning');
     }
-    const sourceLabel = contextWindowSource === 'provider'
-      ? t('ctxProviderDetail')
-      : String(contextWindowSource).startsWith('unknown')
-        ? t('ctxUnknownDetail')
-        : t('ctxPiDetail');
-    tokenUsageEl.title = `上下文：${(lastInputTokens / 1000).toFixed(1)}K / ${formatContextSize(contextWindowSize)} · ${sourceLabel}`;
+    const sourceLabel = contextSourceCopy({ contextSource: contextWindowSource }).detail;
+    tokenUsageEl.title = t('ctxTitle', {
+      used: `${(lastInputTokens / 1000).toFixed(1)}K`,
+      total: formatContextSize(contextWindowSize),
+      source: sourceLabel,
+    });
     if (pct >= 80) {
       showCompactButton();
     } else {
@@ -2497,6 +2518,53 @@ async function loadRelayProviders() {
   } catch {
     relayBackendReady = false;
   }
+}
+
+function parseContextInput(raw) {
+  const text = String(raw || '').trim().toLowerCase().replace(/,/g, '');
+  if (!text) return null;
+  const match = text.match(/^(\d+(?:\.\d+)?)\s*([km])?$/);
+  if (!match) return NaN;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return NaN;
+  if (match[2] === 'm') return Math.round(value * 1000000);
+  if (match[2] === 'k') return Math.round(value * 1000);
+  return Math.round(value);
+}
+
+async function editModelContext(model) {
+  const source = contextSourceCopy(model);
+  const official = model.officialContextWindow ? formatContextSize(model.officialContextWindow) : t('ctxNone');
+  const relay = model.providerContextWindow ? formatContextSize(model.providerContextWindow) : t('ctxNone');
+  const current = model.contextWindow ? formatContextSize(model.contextWindow) : t('ctxUnknown');
+  const hint = [
+    t('ctxEditLead', { name: formatModelName(model) }),
+    t('ctxEditCurrent', { value: current, source: source.short }),
+    t('ctxEditOfficial', { value: official }),
+    t('ctxEditRelay', { value: relay }),
+    t('ctxEditHint'),
+  ].join('\n');
+  const entered = window.prompt(hint, model.contextWindow ? String(model.contextWindow) : '');
+  if (entered === null) return;
+  const reset = !String(entered).trim();
+  const nextWindow = reset ? null : parseContextInput(entered);
+  if (!reset && !Number.isFinite(nextWindow)) {
+    showToast(t('ctxEditInvalid'), 'error', 3600);
+    return;
+  }
+  const data = await rpcCommand({
+    type: 'save_model_context',
+    provider: model.provider,
+    modelId: model.id,
+    contextWindow: nextWindow,
+    reset,
+  }, reset ? t('ctxResetting') : t('ctxSaving'));
+  if (!data?.success) return;
+  await fetchModelInfo({ refreshProviderMetadata: true });
+  showToast(reset ? t('ctxResetOk', { name: formatModelName(model) }) : t('ctxSaved', {
+    name: formatModelName(model),
+    value: formatContextSize(data.data?.contextWindow || nextWindow),
+  }), 'success', 2800);
 }
 
 function slugifyRelayId(name) {

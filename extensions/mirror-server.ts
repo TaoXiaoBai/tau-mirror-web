@@ -459,6 +459,144 @@ export default function (pi: ExtensionAPI) {
     return undefined;
   }
 
+  // Leftover numbers Tau used to invent. Never treat these as a user choice
+  // when a real official or relay value exists.
+  const INVENTED_CONTEXT_DEFAULTS = new Set([128000, 16384, 258000, 1000000]);
+
+  type OfficialModelInfo = { contextWindow?: number; maxTokens?: number; name?: string };
+  let officialCatalog: Map<string, OfficialModelInfo> | null = null;
+
+  function loadOfficialCatalog(): Map<string, OfficialModelInfo> {
+    if (officialCatalog) return officialCatalog;
+    officialCatalog = new Map();
+    const dirs: string[] = [];
+    try {
+      const pkg = require.resolve("@earendil-works/pi-ai/package.json");
+      dirs.push(path.join(path.dirname(pkg), "dist", "providers", "data"));
+    } catch {}
+    try {
+      const pkg = require.resolve("@earendil-works/pi-coding-agent/package.json");
+      dirs.push(path.join(path.dirname(pkg), "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data"));
+    } catch {}
+    dirs.push(path.join(USER_HOME, "AppData", "Roaming", "npm", "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data"));
+    const dir = dirs.find((item) => fs.existsSync(item));
+    if (!dir) return officialCatalog;
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith(".json") || file.startsWith(".")) continue;
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+        const walk = (node: any) => {
+          if (!node || typeof node !== "object") return;
+          if (typeof node.id === "string" && (node.contextWindow || node.context_window)) {
+            const rec: OfficialModelInfo = {
+              contextWindow: readPositiveNumber(node.contextWindow ?? node.context_window),
+              maxTokens: readPositiveNumber(node.maxTokens ?? node.max_tokens),
+              name: node.name,
+            };
+            officialCatalog!.set(String(node.id), rec);
+            officialCatalog!.set(String(node.id).toLowerCase(), rec);
+            return;
+          }
+          for (const value of Object.values(node)) walk(value);
+        };
+        walk(data);
+      } catch {}
+    }
+    return officialCatalog;
+  }
+
+  function officialIdCandidates(modelId: string): string[] {
+    const raw = normalizeModelId(modelId);
+    const out: string[] = [];
+    const add = (value: string) => {
+      if (value && !out.includes(value)) out.push(value);
+    };
+    add(raw);
+    const trimmed = raw.replace(/^\/+/, "");
+    add(trimmed);
+    const parts = trimmed.split(/[\/:]/).filter(Boolean);
+    const last = parts[parts.length - 1] || trimmed;
+    if (parts.length > 1) add(last);
+    add(last.replace(/-thinking-none$/i, ""));
+    add(last.replace(/-thinking(-[a-z0-9]+)?$/i, ""));
+    return out;
+  }
+
+  function lookupOfficialModel(modelId: string): OfficialModelInfo | undefined {
+    const catalog = loadOfficialCatalog();
+    for (const key of officialIdCandidates(modelId)) {
+      const hit = catalog.get(key) || catalog.get(key.toLowerCase());
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  function fileModelEntry(provider: string, modelId: string): any | undefined {
+    const cfg = readModelsFile().providers?.[provider];
+    if (!cfg) return undefined;
+    const id = normalizeModelId(modelId);
+    const models = Array.isArray(cfg.models) ? cfg.models : [];
+    const direct = models.find((item: any) => normalizeModelId(item?.id) === id);
+    if (direct) return direct;
+    const overrides = cfg.modelOverrides && typeof cfg.modelOverrides === "object" ? cfg.modelOverrides : {};
+    if (overrides[id] || overrides[modelId]) return { id, ...(overrides[id] || overrides[modelId]), fromOverride: true };
+    return undefined;
+  }
+
+  function resolveModelContext(modelId: string, existing: any, upstream: any, error?: string) {
+    const official = lookupOfficialModel(modelId);
+    const officialContextWindow = official?.contextWindow;
+    const providerContextWindow = upstreamContextWindow(upstream);
+    const configured = readPositiveNumber(existing?.contextWindow);
+    const markedCustom = !!(existing?.contextCustom && configured);
+    const implicitCustom = !!(configured && officialContextWindow && configured !== officialContextWindow && !INVENTED_CONTEXT_DEFAULTS.has(configured));
+    const customContextWindow = markedCustom || implicitCustom ? configured : undefined;
+
+    if (customContextWindow) {
+      return {
+        contextWindow: customContextWindow,
+        contextSource: "custom",
+        customContextWindow,
+        providerContextWindow,
+        officialContextWindow,
+      };
+    }
+    if (providerContextWindow) {
+      return {
+        contextWindow: providerContextWindow,
+        contextSource: "provider",
+        customContextWindow: undefined,
+        providerContextWindow,
+        officialContextWindow,
+      };
+    }
+    if (officialContextWindow) {
+      return {
+        contextWindow: officialContextWindow,
+        contextSource: "official",
+        customContextWindow: undefined,
+        providerContextWindow,
+        officialContextWindow,
+      };
+    }
+    if (configured && !INVENTED_CONTEXT_DEFAULTS.has(configured)) {
+      return {
+        contextWindow: configured,
+        contextSource: "config",
+        customContextWindow: undefined,
+        providerContextWindow,
+        officialContextWindow,
+      };
+    }
+    return {
+      contextWindow: undefined,
+      contextSource: error ? "unknown-error" : "unknown",
+      customContextWindow: undefined,
+      providerContextWindow,
+      officialContextWindow,
+    };
+  }
+
   function upstreamContextWindow(model: any): number | undefined {
     if (!model || typeof model !== "object") return undefined;
     return firstPositive(
@@ -558,17 +696,19 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function liveModelConfig(id: string, existing: any, upstream: any) {
-    const contextWindow = upstreamContextWindow(upstream);
-    const maxTokens = upstreamMaxTokens(upstream);
+  function liveModelConfig(id: string, existing: any, upstream: any, error?: string) {
+    const official = lookupOfficialModel(id);
+    const resolved = resolveModelContext(id, existing, upstream, error);
+    const maxTokens = upstreamMaxTokens(upstream) || official?.maxTokens || existing?.maxTokens;
     return {
       id,
-      name: existing?.name || String(upstream?.name || id),
+      name: existing?.name || official?.name || String(upstream?.name || id),
       reasoning: upstreamReasoning(upstream) ?? existing?.reasoning ?? true,
       input: upstreamInput(upstream) ?? existing?.input ?? ["text"],
       cost: existing?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      ...(contextWindow ? { contextWindow } : {}),
+      ...(resolved.contextWindow ? { contextWindow: resolved.contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
+      ...resolved,
     };
   }
 
@@ -603,18 +743,24 @@ export default function (pi: ExtensionAPI) {
               contextWindow: model.contextWindow,
               maxTokens: model.maxTokens,
             }));
-        result.push(...fallback.filter((model: any) => model.id).map((model: any) => ({
-          ...model,
-          contextWindow: undefined,
-          contextSource: "unknown-error",
-          providerMetadataError: meta.error,
-          providerMetadataCheckedAt: meta.fetchedAt,
-        })));
+        result.push(...fallback.filter((model: any) => model.id).map((model: any) => {
+          const fileEntry = fileModelEntry(provider, model.id) || model;
+          const resolved = resolveModelContext(model.id, fileEntry, null, meta.error);
+          return {
+            ...model,
+            ...resolved,
+            providerMetadataError: meta.error,
+            providerMetadataCheckedAt: meta.fetchedAt,
+          };
+        }));
         continue;
       }
 
       const existingById = new Map(providerModels.map((model) => [normalizeModelId(model.id), model]));
-      const configs = [...meta.models.entries()].map(([id, upstream]) => liveModelConfig(id, existingById.get(id), upstream));
+      const configs = [...meta.models.entries()].map(([id, upstream]) => {
+        const fileEntry = fileModelEntry(provider, id) || existingById.get(id);
+        return liveModelConfig(id, fileEntry, upstream);
+      });
       try {
         // If the provider is already in Pi, only replace the model list.
         // Passing baseUrl/apiKey here can wipe /login credentials.
@@ -642,15 +788,12 @@ export default function (pi: ExtensionAPI) {
 
       for (const [id, upstream] of meta.models) {
         const existing = existingById.get(id);
-        const config = liveModelConfig(id, existing, upstream);
-        const providerContextWindow = upstreamContextWindow(upstream);
+        const fileEntry = fileModelEntry(provider, id) || existing;
+        const config = liveModelConfig(id, fileEntry, upstream);
         result.push({
           ...(existing || {}),
           ...config,
           provider,
-          contextWindow: providerContextWindow,
-          providerContextWindow,
-          contextSource: providerContextWindow ? "provider" : "unknown",
           providerMetadataCheckedAt: meta.fetchedAt,
           providerMetadataError: meta.error,
         });
@@ -680,21 +823,23 @@ export default function (pi: ExtensionAPI) {
 
     return models.map((model: any) => {
       if (getLiveSyncProviders().has(model.provider)) return model;
-      if (!LIVE_MODEL_METADATA_PROVIDERS.has(model.provider)) {
-        return { ...model, contextSource: "pi-registry" };
-      }
-      const providerResult = metadata.get(model.provider);
+      const fileEntry = fileModelEntry(model.provider, model.id);
+      const providerResult = LIVE_MODEL_METADATA_PROVIDERS.has(model.provider)
+        ? metadata.get(model.provider)
+        : undefined;
       const upstream = providerResult?.models.get(String(model.id));
-      const providerContextWindow = upstreamContextWindow(upstream);
+      const resolved = resolveModelContext(
+        model.id,
+        fileEntry || model,
+        upstream,
+        providerResult?.error,
+      );
+      if (!LIVE_MODEL_METADATA_PROVIDERS.has(model.provider) && !fileEntry && !resolved.officialContextWindow) {
+        return { ...model, ...resolved, contextSource: resolved.contextWindow ? "pi-registry" : resolved.contextSource };
+      }
       return {
         ...model,
-        contextWindow: providerContextWindow,
-        providerContextWindow,
-        contextSource: providerContextWindow
-          ? "provider"
-          : providerResult?.error
-            ? "unknown-error"
-            : "unknown",
+        ...resolved,
         providerMetadataCheckedAt: providerResult?.fetchedAt,
         providerMetadataError: providerResult?.error,
       };
@@ -1532,15 +1677,18 @@ export default function (pi: ExtensionAPI) {
                 const existingById = new Map(models.map((m: any) => [normalizeModelId(m.id), m]));
                 models = records.map((item) => {
                   const prev = existingById.get(item.id);
-                  const contextWindow = upstreamContextWindow(item.raw);
-                  const maxTokens = upstreamMaxTokens(item.raw);
+                  const official = lookupOfficialModel(item.id);
+                  const resolved = resolveModelContext(item.id, prev, item.raw);
+                  const maxTokens = upstreamMaxTokens(item.raw) || official?.maxTokens || prev?.maxTokens;
+                  const persistWindow = resolved.customContextWindow || upstreamContextWindow(item.raw);
                   return {
                     id: item.id,
-                    name: prev?.name || item.name || item.id,
+                    name: prev?.name || official?.name || item.name || item.id,
                     reasoning: upstreamReasoning(item.raw) ?? prev?.reasoning ?? true,
                     input: upstreamInput(item.raw) || prev?.input || ["text"],
-                    ...(contextWindow ? { contextWindow } : {}),
+                    ...(persistWindow ? { contextWindow: persistWindow } : {}),
                     ...(maxTokens ? { maxTokens } : {}),
+                    ...(resolved.customContextWindow ? { contextCustom: true } : {}),
                   };
                 });
               }
@@ -1607,6 +1755,77 @@ export default function (pi: ExtensionAPI) {
           providerMetadataCache.delete(id);
           try { pi.unregisterProvider(id); } catch {}
           sendTo(ws, success("delete_provider", { id }));
+          break;
+        }
+
+        case "save_model_context": {
+          const provider = String(command.provider || "").trim();
+          const modelId = normalizeModelId(command.modelId || command.id);
+          if (!provider || !modelId) {
+            sendTo(ws, error("save_model_context", "缺少供应商或模型 ID"));
+            break;
+          }
+          if (BUILTIN_PROVIDERS.has(provider)) {
+            sendTo(ws, error("save_model_context", "内置供应商请在 models.json 里改 modelOverrides"));
+            break;
+          }
+          const file = readModelsFile();
+          const cfg = file.providers[provider];
+          if (!cfg) {
+            sendTo(ws, error("save_model_context", `没有找到中转站 ${provider}`));
+            break;
+          }
+          const reset = command.reset === true || command.contextWindow === null || command.contextWindow === "";
+          const nextWindow = reset ? undefined : readPositiveNumber(command.contextWindow);
+          if (!reset && !nextWindow) {
+            sendTo(ws, error("save_model_context", "请填写大于 0 的上下文长度"));
+            break;
+          }
+          const models = Array.isArray(cfg.models) ? [...cfg.models] : [];
+          const idx = models.findIndex((item: any) => normalizeModelId(item?.id) === modelId);
+          const prev = idx >= 0 ? models[idx] : { id: modelId };
+          const official = lookupOfficialModel(modelId);
+          const next = { ...prev, id: modelId };
+          if (reset) {
+            delete next.contextCustom;
+            if (official?.contextWindow) next.contextWindow = official.contextWindow;
+            else delete next.contextWindow;
+          } else {
+            next.contextWindow = nextWindow;
+            next.contextCustom = true;
+          }
+          if (idx >= 0) models[idx] = next;
+          else models.push(next);
+          cfg.models = models;
+          file.providers[provider] = cfg;
+          writeModelsFile(file);
+          providerMetadataCache.delete(provider);
+          const resolved = resolveModelContext(modelId, next, null);
+          try {
+            const registered = (cfg.models || []).map((m: any) => ({
+              id: normalizeModelId(m.id),
+              name: m.name || normalizeModelId(m.id),
+              reasoning: m.reasoning ?? true,
+              input: m.input || ["text"],
+              cost: m.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+              ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+            }));
+            if (registered.length > 0) {
+              pi.registerProvider(provider, {
+                api: normalizeRelayApi(cfg.baseUrl, cfg.api),
+                compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
+                models: registered,
+              });
+            }
+          } catch (e: any) {
+            console.warn(`[Mirror] Could not re-register ${provider} after context edit: ${e?.message || e}`);
+          }
+          sendTo(ws, success("save_model_context", {
+            provider,
+            modelId,
+            ...resolved,
+          }));
           break;
         }
 

@@ -379,9 +379,25 @@ textarea {
   white-space: nowrap;
 }
 
+.model-dropdown-item-meta .model-context-badge {
+  cursor: pointer;
+}
+
 .model-dropdown-item-meta .model-context-badge.context-provider {
   background: color-mix(in srgb, var(--success) 13%, transparent);
   color: var(--success);
+}
+
+.model-dropdown-item-meta .model-context-badge.context-official,
+.model-dropdown-item-meta .model-context-badge.context-pi-registry {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-text);
+}
+
+.model-dropdown-item-meta .model-context-badge.context-custom,
+.model-dropdown-item-meta .model-context-badge.context-config {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-text);
 }
 
 .model-dropdown-item-meta .model-context-badge.context-unknown,
