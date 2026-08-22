@@ -1036,6 +1036,53 @@ let availableModels = [];
 let modelMetadataMode = 'pi-only';
 let relayProviders = [];
 let currentThinkingLevel = 'off';
+const BUILTIN_MODEL_PROVIDERS = new Set([
+  'openai', 'anthropic', 'google', 'google-gemini', 'google-generative-ai',
+  'google-vertex', 'amazon-bedrock', 'azure', 'azure-openai', 'groq',
+  'mistral', 'openrouter', 'xai', 'grok', 'cerebras', 'github-copilot',
+  'opencode', 'cloudflare', 'vercel', 'together', 'fireworks',
+]);
+
+function inferRelaysFromModels() {
+  const byProvider = new Map();
+  for (const model of availableModels) {
+    const id = model.provider || '';
+    if (!id || BUILTIN_MODEL_PROVIDERS.has(id)) continue;
+    if (!byProvider.has(id)) {
+      byProvider.set(id, {
+        id,
+        name: formatProvider(id),
+        baseUrl: model.baseUrl || '',
+        api: model.api || 'openai-completions',
+        apiKeySet: true,
+        modelCount: 0,
+        sampleModels: [],
+        inferred: true,
+      });
+    }
+    const row = byProvider.get(id);
+    row.modelCount += 1;
+    if (row.sampleModels.length < 4 && model.id) row.sampleModels.push(model.id);
+  }
+  return [...byProvider.values()];
+}
+
+function getManageableRelays() {
+  const map = new Map();
+  for (const item of inferRelaysFromModels()) map.set(item.id, item);
+  for (const item of relayProviders) {
+    const prev = map.get(item.id) || {};
+    map.set(item.id, {
+      ...prev,
+      ...item,
+      name: item.name || prev.name || item.id,
+      modelCount: item.modelCount || prev.modelCount || 0,
+      sampleModels: item.sampleModels?.length ? item.sampleModels : prev.sampleModels,
+      inferred: false,
+    });
+  }
+  return [...map.values()].sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+}
 
 const THINKING_LEVELS = thinkingLevels;
 
@@ -1079,7 +1126,7 @@ function formatProvider(provider) {
     'newapi-futureppo': 'FuturePPO',
   };
   const relay = relayProviders.find(item => item.id === provider);
-  return names[provider] || relay?.name || provider || '未知供应商';
+  return names[provider] || relay?.name || provider || t('unknownProvider');
 }
 
 function formatModelName(model) {
@@ -1238,13 +1285,14 @@ function openModelDropdown() {
     title.textContent = t('relayBarTitle');
     relayBar.appendChild(title);
 
-    if (!relayProviders.length) {
+    const relays = getManageableRelays();
+    if (!relays.length) {
       const empty = document.createElement('div');
       empty.className = 'model-relay-empty';
       empty.textContent = t('noRelaysHint');
       relayBar.appendChild(empty);
     } else {
-      relayProviders.forEach((relay) => {
+      relays.forEach((relay) => {
         const row = document.createElement('button');
         row.type = 'button';
         row.className = 'model-relay-row';
@@ -1317,7 +1365,7 @@ function openModelDropdown() {
     groups.forEach((models, provider) => {
       const heading = document.createElement('div');
       heading.className = 'model-dropdown-provider';
-      const relay = relayProviders.find(item => item.id === provider);
+      const relay = getManageableRelays().find(item => item.id === provider);
       const meta = document.createElement('span');
       meta.className = 'model-dropdown-provider-meta';
       meta.append(document.createTextNode(String(models.length)));
@@ -2380,8 +2428,17 @@ toggleAuth.addEventListener('click', async () => {
 let editingRelayId = null;
 
 async function loadRelayProviders() {
-  const data = await rpcCommand({ type: 'get_providers' });
-  relayProviders = data?.success && Array.isArray(data.data?.providers) ? data.data.providers : [];
+  try {
+    const resp = await fetch('/api/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'get_providers' }),
+    });
+    const data = await resp.json();
+    if (data?.success && Array.isArray(data.data?.providers)) {
+      relayProviders = data.data.providers;
+    }
+  } catch {}
 }
 
 function slugifyRelayId(name) {
