@@ -3092,7 +3092,7 @@ messageRenderer.renderWelcome();
 sidebar.loadSessions().then(() => {
   if (isMirrorMode) updateMirrorLiveIndicator();
 });
-setTimeout(initLauncher, 1500);
+initLauncher();
 
 // Register service worker for PWA
 if ('serviceWorker' in navigator) {

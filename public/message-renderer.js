@@ -5,6 +5,45 @@
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
 import { t } from './i18n.js';
 
+function findStableMarkdownEnd(src) {
+  // Only lock finished fences and tables. Lists / paragraphs can still grow,
+  // so splitting them would change the live layout.
+  let lastSafe = 0;
+  let inFence = false;
+  let inTable = false;
+  let lineStart = 0;
+  const len = src.length;
+  for (let i = 0; i <= len; i++) {
+    if (i !== len && src.charCodeAt(i) !== 10) continue;
+    const line = src.slice(lineStart, i);
+    const next = i === len ? len : i + 1;
+    const trimmed = line.trim();
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      inTable = false;
+      if (!inFence) lastSafe = next;
+      lineStart = next;
+      continue;
+    }
+    if (inFence) {
+      lineStart = next;
+      continue;
+    }
+    const isTable = trimmed.startsWith('|') && trimmed.endsWith('|');
+    if (isTable) {
+      inTable = true;
+      lineStart = next;
+      continue;
+    }
+    if (inTable) {
+      inTable = false;
+      lastSafe = lineStart;
+    }
+    lineStart = next;
+  }
+  return lastSafe > 0 && lastSafe < src.length ? lastSafe : 0;
+}
+
 let katexLoader = null;
 function loadKatex() {
   if (typeof renderMathInElement === 'function') return Promise.resolve();
@@ -243,9 +282,9 @@ export class MessageRenderer {
       }
       const elapsed = Math.max(0, performance.now() - Number(thinkingDiv.dataset.startedAt || performance.now()));
       const duration = thinkingDiv.querySelector('.thinking-duration');
-      if (duration) duration.textContent = `${Math.max(0, Math.round(elapsed / 1000))} 秒`;
+      if (duration) duration.textContent = `${(elapsed / 1000).toFixed(1)} 秒`;
     };
-    const timer = setInterval(updateElapsed, 1000);
+    const timer = setInterval(updateElapsed, 250);
     this._thinkingTimers.set(thinkingDiv, timer);
     contentDiv.prepend(thinkingDiv);
     return thinkingDiv;
@@ -275,7 +314,7 @@ export class MessageRenderer {
     const startedAt = Number(thinkingDiv.dataset.startedAt || performance.now());
     const elapsed = Math.max(0, performance.now() - startedAt);
     const duration = thinkingDiv.querySelector('.thinking-duration');
-    if (duration) duration.textContent = `${Math.max(0, Math.round(elapsed / 1000))} 秒`;
+    if (duration) duration.textContent = `${(elapsed / 1000).toFixed(1)} 秒`;
 
     // Collapse automatically when the answer starts, unless the user already
     // chose an expansion state while watching the live reasoning.
@@ -300,27 +339,31 @@ export class MessageRenderer {
       contentDiv.appendChild(textNode);
     }
     textNode.dataset.raw = (textNode.dataset.raw || '') + delta;
-    const raw = textNode.dataset.raw;
-    const now = performance.now();
-    const last = Number(textNode.dataset.mdAt || 0);
-    // Full markdown of a growing reply is the main stream jank. Rebuild at
-    // most ~8 times a second; show the unread tail as plain text in between.
-    if (!last || now - last >= 120) {
-      let src = raw;
-      const fenceCount = (src.match(/^```/gm) || []).length;
-      if (fenceCount % 2 !== 0) src += '\n```';
-      textNode.innerHTML = renderMarkdown(src);
-      textNode.dataset.mdAt = String(now);
-      textNode.dataset.mdLen = String(raw.length);
-      return;
+    this._paintStreamingMarkdown(textNode);
+  }
+
+  _paintStreamingMarkdown(textNode) {
+    let src = textNode.dataset.raw || '';
+    const fenceCount = (src.match(/^```/gm) || []).length;
+    if (fenceCount % 2 !== 0) src += '\n```';
+
+    const stableEnd = findStableMarkdownEnd(src);
+    let stableEl = textNode.querySelector(':scope > .stream-stable');
+    let liveEl = textNode.querySelector(':scope > .stream-live');
+    if (!stableEl || !liveEl) {
+      textNode.replaceChildren();
+      stableEl = document.createElement('div');
+      stableEl.className = 'stream-stable';
+      liveEl = document.createElement('div');
+      liveEl.className = 'stream-live';
+      textNode.append(stableEl, liveEl);
     }
-    let tailEl = textNode.querySelector('.stream-tail');
-    if (!tailEl) {
-      tailEl = document.createElement('span');
-      tailEl.className = 'stream-tail';
-      textNode.appendChild(tailEl);
+
+    if (Number(textNode.dataset.stableEnd || 0) !== stableEnd) {
+      stableEl.innerHTML = stableEnd > 0 ? renderMarkdown(src.slice(0, stableEnd)) : '';
+      textNode.dataset.stableEnd = String(stableEnd);
     }
-    tailEl.textContent = raw.slice(Number(textNode.dataset.mdLen || 0));
+    liveEl.innerHTML = renderMarkdown(src.slice(stableEnd));
   }
 
   finalizeStreamingMessage(messageElement, usage = null, thinking = '') {
