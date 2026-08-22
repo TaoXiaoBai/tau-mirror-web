@@ -135,12 +135,20 @@ function migrateRelayProtocols(file: { providers: Record<string, any> }): boolea
   return changed;
 }
 
+let modelsFileCache: { mtimeMs: number; data: { providers: Record<string, any> } } | null = null;
+
 function readModelsFile(): { providers: Record<string, any> } {
   try {
-    if (!fs.existsSync(MODELS_JSON_PATH)) return { providers: {} };
+    if (!fs.existsSync(MODELS_JSON_PATH)) {
+      modelsFileCache = null;
+      return { providers: {} };
+    }
+    const stat = fs.statSync(MODELS_JSON_PATH);
+    if (modelsFileCache && modelsFileCache.mtimeMs === stat.mtimeMs) return modelsFileCache.data;
     const parsed = JSON.parse(fs.readFileSync(MODELS_JSON_PATH, "utf8"));
     if (!parsed || typeof parsed !== "object") return { providers: {} };
     if (!parsed.providers || typeof parsed.providers !== "object") parsed.providers = {};
+    modelsFileCache = { mtimeMs: stat.mtimeMs, data: parsed };
     return parsed;
   } catch {
     return { providers: {} };
@@ -160,6 +168,11 @@ function writeModelsFile(data: { providers: Record<string, any> }) {
   } catch {
     fs.writeFileSync(MODELS_JSON_PATH, payload, "utf8");
     try { fs.unlinkSync(tmp); } catch {}
+  }
+  try {
+    modelsFileCache = { mtimeMs: fs.statSync(MODELS_JSON_PATH).mtimeMs, data };
+  } catch {
+    modelsFileCache = null;
   }
 }
 

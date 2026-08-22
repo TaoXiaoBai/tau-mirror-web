@@ -1404,8 +1404,21 @@ textarea {
 }
 
 /* 关闭高消耗的持续脉冲动画，仅在临界状态才需要它 */
-.token-usage.critical {
+.token-usage.critical,
+.status-indicator.streaming,
+.status-indicator.connected,
+.session-item.mirror-live .session-title::before,
+.tool-status.streaming,
+.tool-status.streaming::before {
   animation: none;
+}
+
+.messages {
+  scroll-behavior: auto;
+}
+
+.stream-tail {
+  white-space: pre-wrap;
 }
 
 /* ═══════════════════════════════════════════════════════

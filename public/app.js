@@ -257,19 +257,24 @@ document.addEventListener('visibilitychange', () => {
 // Scroll-to-bottom button + new message indicator
 // ═══════════════════════════════════════
 
+let scrollBtnPending = false;
 messagesContainer.addEventListener('scroll', () => {
-  const threshold = 150;
-  const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
-  isScrolledUp = !atBottom;
-  
-  if (atBottom) {
-    scrollBottomBtn.classList.add('hidden');
-    scrollBottomBadge.classList.add('hidden');
-    hasNewWhileScrolled = false;
-  } else {
-    scrollBottomBtn.classList.remove('hidden');
-  }
-});
+  if (scrollBtnPending) return;
+  scrollBtnPending = true;
+  requestAnimationFrame(() => {
+    scrollBtnPending = false;
+    const threshold = 150;
+    const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
+    isScrolledUp = !atBottom;
+    if (atBottom) {
+      scrollBottomBtn.classList.add('hidden');
+      scrollBottomBadge.classList.add('hidden');
+      hasNewWhileScrolled = false;
+    } else {
+      scrollBottomBtn.classList.remove('hidden');
+    }
+  });
+}, { passive: true });
 
 scrollBottomBtn.addEventListener('click', () => {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -391,7 +396,7 @@ function handleCompactionStart(event) {
   const retry = event?.willRetry ? '，完成后将自动重试' : '';
   el.innerHTML = `<span class="compaction-spinner">⟳</span> 正在整理上下文（${reason}${retry}）…`;
   messagesContainer.appendChild(el);
-  scrollToBottom();
+  messageRenderer.scrollToBottom();
 }
 
 function handleCompactionEnd(event) {
@@ -1195,7 +1200,20 @@ function updateThinkingBtn() {
   thinkingBtn.setAttribute('aria-disabled', String(unsupported));
 }
 
+let modelInfoInflight = null;
+
 async function fetchModelInfo(options = {}) {
+  if (modelInfoInflight && !options.refreshProviderMetadata) return modelInfoInflight;
+  const task = loadModelInfo(options);
+  modelInfoInflight = task;
+  try {
+    return await task;
+  } finally {
+    if (modelInfoInflight === task) modelInfoInflight = null;
+  }
+}
+
+async function loadModelInfo(options = {}) {
   try {
     const needProviders = options.refreshProviderMetadata === true || options.includeProviders === true;
     const [modelsResp, stateResp, providersResp] = await Promise.all([
@@ -3074,7 +3092,7 @@ messageRenderer.renderWelcome();
 sidebar.loadSessions().then(() => {
   if (isMirrorMode) updateMirrorLiveIndicator();
 });
-initLauncher();
+setTimeout(initLauncher, 1500);
 
 // Register service worker for PWA
 if ('serviceWorker' in navigator) {

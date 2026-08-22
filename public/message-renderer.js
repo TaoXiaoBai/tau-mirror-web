@@ -243,9 +243,9 @@ export class MessageRenderer {
       }
       const elapsed = Math.max(0, performance.now() - Number(thinkingDiv.dataset.startedAt || performance.now()));
       const duration = thinkingDiv.querySelector('.thinking-duration');
-      if (duration) duration.textContent = `${(elapsed / 1000).toFixed(1)} 秒`;
+      if (duration) duration.textContent = `${Math.max(0, Math.round(elapsed / 1000))} 秒`;
     };
-    const timer = setInterval(updateElapsed, 250);
+    const timer = setInterval(updateElapsed, 1000);
     this._thinkingTimers.set(thinkingDiv, timer);
     contentDiv.prepend(thinkingDiv);
     return thinkingDiv;
@@ -275,7 +275,7 @@ export class MessageRenderer {
     const startedAt = Number(thinkingDiv.dataset.startedAt || performance.now());
     const elapsed = Math.max(0, performance.now() - startedAt);
     const duration = thinkingDiv.querySelector('.thinking-duration');
-    if (duration) duration.textContent = `${(elapsed / 1000).toFixed(1)} 秒`;
+    if (duration) duration.textContent = `${Math.max(0, Math.round(elapsed / 1000))} 秒`;
 
     // Collapse automatically when the answer starts, unless the user already
     // chose an expansion state while watching the live reasoning.
@@ -300,12 +300,27 @@ export class MessageRenderer {
       contentDiv.appendChild(textNode);
     }
     textNode.dataset.raw = (textNode.dataset.raw || '') + delta;
-    // Live markdown render: auto-close any open fenced code block so
-    // partially-streamed code still renders inside a styled block.
-    let src = textNode.dataset.raw;
-    const fenceCount = (src.match(/^```/gm) || []).length;
-    if (fenceCount % 2 !== 0) src += '\n```';
-    textNode.innerHTML = renderMarkdown(src);
+    const raw = textNode.dataset.raw;
+    const now = performance.now();
+    const last = Number(textNode.dataset.mdAt || 0);
+    // Full markdown of a growing reply is the main stream jank. Rebuild at
+    // most ~8 times a second; show the unread tail as plain text in between.
+    if (!last || now - last >= 120) {
+      let src = raw;
+      const fenceCount = (src.match(/^```/gm) || []).length;
+      if (fenceCount % 2 !== 0) src += '\n```';
+      textNode.innerHTML = renderMarkdown(src);
+      textNode.dataset.mdAt = String(now);
+      textNode.dataset.mdLen = String(raw.length);
+      return;
+    }
+    let tailEl = textNode.querySelector('.stream-tail');
+    if (!tailEl) {
+      tailEl = document.createElement('span');
+      tailEl.className = 'stream-tail';
+      textNode.appendChild(tailEl);
+    }
+    tailEl.textContent = raw.slice(Number(textNode.dataset.mdLen || 0));
   }
 
   finalizeStreamingMessage(messageElement, usage = null, thinking = '') {
