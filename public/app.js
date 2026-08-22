@@ -140,6 +140,7 @@ function humanizeModelError(error) {
   if (/401|unauthorized|invalid api key|incorrect api key|invalid.?key/i.test(message)) return t('errUnauthorized');
   if (/403|forbidden/i.test(message)) return t('errForbidden');
   if (/unknown route\s*\/?v1\/responses|\/v1\/responses/i.test(message)) return t('errResponsesRoute');
+  if (/developer is not one of|messages\.\[.?0.?\]\.role|invalid_request_error/i.test(message) && /developer/i.test(message)) return t('errDeveloperRole');
   if (/404|model.?not.?found|does not exist|unknown model/i.test(message)) return t('errModelUnavailable', { msg: message });
   if (/429|rate limit|too many requests/i.test(message)) return t('errRateLimit');
   if (/402|insufficient|quota|balance|余额不足/i.test(message)) return t('errQuota');
@@ -1345,40 +1346,101 @@ function openModelDropdown() {
   paintRelayBar();
   loadRelayProviders().then(() => {
     if (!modelDropdownMenu.classList.contains('hidden') && !modelDropdownMenu.querySelector('.relay-editor')) {
+      relaysById = new Map(getManageableRelays().map(item => [item.id, item]));
       paintRelayBar();
       renderItems(search.value);
     }
   });
 
+  const MODEL_LIST_PREVIEW = 8;
+  let relaysById = new Map(getManageableRelays().map(item => [item.id, item]));
+
+  function buildModelItem(model, currentKey) {
+    const isActive = getModelKey(model) === currentKey;
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = `model-dropdown-item${isActive ? ' active' : ''}`;
+    el.dataset.modelKey = getModelKey(model);
+    el.dataset.provider = model.provider || '';
+    el.dataset.modelId = model.id || '';
+    el.setAttribute('role', 'option');
+    el.setAttribute('aria-selected', String(isActive));
+
+    const copy = document.createElement('span');
+    copy.className = 'model-dropdown-item-copy';
+    const name = document.createElement('span');
+    name.className = 'model-dropdown-item-name';
+    name.textContent = formatModelName(model);
+    const hint = document.createElement('span');
+    hint.className = 'model-dropdown-item-id';
+    hint.textContent = MODEL_HINTS[model.id] || model.id || '';
+    copy.append(name, hint);
+
+    const meta = document.createElement('span');
+    meta.className = 'model-dropdown-item-meta';
+    if (model.contextWindow) {
+      const source = contextSourceCopy(model);
+      const contextBadge = document.createElement('span');
+      contextBadge.className = `model-context-badge context-${model.contextSource || 'pi-registry'}`;
+      contextBadge.textContent = `${formatContextSize(model.contextWindow)} · ${source.short}`;
+      contextBadge.title = source.detail;
+      meta.appendChild(contextBadge);
+    }
+    if (model.input?.includes('image')) {
+      const badge = document.createElement('span');
+      badge.textContent = t('tagImage');
+      meta.appendChild(badge);
+    }
+    if (model.reasoning) {
+      const badge = document.createElement('span');
+      badge.textContent = t('tagThink');
+      meta.appendChild(badge);
+    }
+    if (isActive) {
+      const check = document.createElement('span');
+      check.className = 'model-active-check';
+      check.textContent = '✓';
+      meta.appendChild(check);
+    }
+    el.append(copy, meta);
+    return el;
+  }
+
   function renderItems(filter) {
-    itemsContainer.innerHTML = '';
     const query = (filter || '').trim().toLowerCase();
     const providerRank = { 'ccswitch-cl': 0, 'newapi-zhyxulei': 1, 'tavern-openai': 2, 'newapi-futureppo': 3 };
-    const sortedModels = [...availableModels].sort((a, b) =>
-      (providerRank[a.provider] ?? 9) - (providerRank[b.provider] ?? 9)
-      || formatModelName(a).localeCompare(formatModelName(b))
-    );
     const groups = new Map();
-    sortedModels.forEach(model => {
-      const haystack = `${model.id || ''} ${model.name || ''} ${model.provider || ''} ${formatModelName(model)}`.toLowerCase();
-      if (query && !haystack.includes(query)) return;
+    for (const model of availableModels) {
+      if (query) {
+        const haystack = `${model.id || ''} ${model.name || ''} ${model.provider || ''} ${formatModelName(model)}`.toLowerCase();
+        if (!haystack.includes(query)) continue;
+      }
       const provider = model.provider || 'unknown';
       if (!groups.has(provider)) groups.set(provider, []);
       groups.get(provider).push(model);
-    });
+    }
+    const providers = [...groups.keys()].sort((a, b) =>
+      (providerRank[a] ?? 9) - (providerRank[b] ?? 9)
+      || formatProvider(a).localeCompare(formatProvider(b))
+    );
 
-    if (groups.size === 0) {
+    const frag = document.createDocumentFragment();
+    if (providers.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'model-dropdown-empty';
       empty.textContent = availableModels.length ? t('noMatchModels') : t('noModelsYet');
-      itemsContainer.appendChild(empty);
+      frag.appendChild(empty);
+      itemsContainer.replaceChildren(frag);
       return;
     }
 
-    groups.forEach((models, provider) => {
+    const currentKey = getCurrentModelKey();
+    for (const provider of providers) {
+      const models = groups.get(provider);
+      models.sort((a, b) => formatModelName(a).localeCompare(formatModelName(b)));
       const heading = document.createElement('div');
       heading.className = 'model-dropdown-provider';
-      const relay = getManageableRelays().find(item => item.id === provider);
+      const relay = relaysById.get(provider);
       const meta = document.createElement('span');
       meta.className = 'model-dropdown-provider-meta';
       meta.append(document.createTextNode(String(models.length)));
@@ -1386,90 +1448,77 @@ function openModelDropdown() {
         const edit = document.createElement('button');
         edit.type = 'button';
         edit.className = 'model-dropdown-provider-edit';
+        edit.dataset.relayId = relay.id;
         edit.textContent = t('editRelay');
-        edit.addEventListener('click', (event) => {
-          event.stopPropagation();
-          showRelayEditor(relay);
-        });
         meta.appendChild(edit);
       }
       const name = document.createElement('span');
       name.textContent = formatProvider(provider);
       heading.append(name, meta);
-      itemsContainer.appendChild(heading);
+      frag.appendChild(heading);
 
-      models.forEach(model => {
-        const isActive = getModelKey(model) === getCurrentModelKey();
-        const el = document.createElement('button');
-        el.type = 'button';
-        el.className = `model-dropdown-item${isActive ? ' active' : ''}`;
-        el.dataset.modelKey = getModelKey(model);
-        el.dataset.provider = model.provider || '';
-        el.dataset.modelId = model.id || '';
-        el.setAttribute('role', 'option');
-        el.setAttribute('aria-selected', String(isActive));
-
-        const copy = document.createElement('span');
-        copy.className = 'model-dropdown-item-copy';
-        const name = document.createElement('span');
-        name.className = 'model-dropdown-item-name';
-        name.textContent = formatModelName(model);
-        const hint = document.createElement('span');
-        hint.className = 'model-dropdown-item-id';
-        hint.textContent = MODEL_HINTS[model.id] || model.id || '';
-        copy.append(name, hint);
-
-        const meta = document.createElement('span');
-        meta.className = 'model-dropdown-item-meta';
-        if (model.contextWindow) {
-          const source = contextSourceCopy(model);
-          const contextBadge = document.createElement('span');
-          contextBadge.className = `model-context-badge context-${model.contextSource || 'pi-registry'}`;
-          contextBadge.textContent = `${formatContextSize(model.contextWindow)} · ${source.short}`;
-          contextBadge.title = source.detail;
-          meta.appendChild(contextBadge);
-        }
-        const tags = [];
-        if (model.input?.includes('image')) tags.push(t('tagImage'));
-        if (model.reasoning) tags.push(t('tagThink'));
-        tags.forEach(tag => {
-          const badge = document.createElement('span');
-          badge.textContent = tag;
-          meta.appendChild(badge);
-        });
-        if (isActive) {
-          const check = document.createElement('span');
-          check.className = 'model-active-check';
-          check.textContent = '✓';
-          meta.appendChild(check);
-        }
-        el.append(copy, meta);
-
-        el.addEventListener('click', async () => {
-          closeModelDropdown();
-          const display = formatModelName(model);
-          const result = await rpcCommand(
-            { type: 'set_model', provider: model.provider, modelId: model.id },
-            t('switchingTo', { name: display })
-          );
-          if (!result?.success) {
-            await fetchModelInfo();
-            return;
-          }
-          currentModelId = model.id;
-          currentModelProvider = model.provider || '';
-          applyContextWindow(model);
-          updateModelLabel();
-          showToast(t('switchedTo', { name: display }), 'success', 2600);
-          setTimeout(() => fetchModelInfo(), 200);
-        });
-        itemsContainer.appendChild(el);
-      });
-    });
+      const limit = query ? models.length : Math.min(models.length, MODEL_LIST_PREVIEW);
+      for (let i = 0; i < limit; i++) frag.appendChild(buildModelItem(models[i], currentKey));
+      if (!query && models.length > MODEL_LIST_PREVIEW) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'model-dropdown-more';
+        more.dataset.provider = provider;
+        more.textContent = t('showMoreModels', { n: models.length });
+        frag.appendChild(more);
+      }
+    }
+    itemsContainer.replaceChildren(frag);
   }
 
+  itemsContainer.addEventListener('click', async (event) => {
+    const edit = event.target.closest('.model-dropdown-provider-edit');
+    if (edit) {
+      event.stopPropagation();
+      const relay = relaysById.get(edit.dataset.relayId);
+      if (relay) showRelayEditor(relay);
+      return;
+    }
+    const more = event.target.closest('.model-dropdown-more');
+    if (more) {
+      event.stopPropagation();
+      const provider = more.dataset.provider;
+      const models = availableModels
+        .filter(model => (model.provider || 'unknown') === provider)
+        .sort((a, b) => formatModelName(a).localeCompare(formatModelName(b)));
+      const currentKey = getCurrentModelKey();
+      const frag = document.createDocumentFragment();
+      for (const model of models) frag.appendChild(buildModelItem(model, currentKey));
+      more.replaceWith(frag);
+      return;
+    }
+    const item = event.target.closest('.model-dropdown-item');
+    if (!item) return;
+    closeModelDropdown();
+    const model = availableModels.find(entry => getModelKey(entry) === item.dataset.modelKey)
+      || { provider: item.dataset.provider, id: item.dataset.modelId };
+    const display = formatModelName(model);
+    const result = await rpcCommand(
+      { type: 'set_model', provider: model.provider, modelId: model.id },
+      t('switchingTo', { name: display })
+    );
+    if (!result?.success) {
+      await fetchModelInfo();
+      return;
+    }
+    currentModelId = model.id;
+    currentModelProvider = model.provider || '';
+    applyContextWindow(model);
+    updateModelLabel();
+    showToast(t('switchedTo', { name: display }), 'success', 2600);
+  });
+
   renderItems('');
-  search.addEventListener('input', () => renderItems(search.value));
+  let searchTimer = 0;
+  search.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => renderItems(search.value), 80);
+  });
   search.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
       closeModelDropdown();

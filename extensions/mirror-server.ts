@@ -105,13 +105,30 @@ function normalizeRelayApi(baseUrl?: string, api?: string): string {
   return requested;
 }
 
+function isOfficialOpenAI(baseUrl?: string): boolean {
+  return /api\.openai\.com/i.test(String(baseUrl || ""));
+}
+
+function defaultRelayCompat(baseUrl?: string, api?: string, existing?: any) {
+  const next = existing && typeof existing === "object" ? { ...existing } : {};
+  if (!isOfficialOpenAI(baseUrl) && String(api || "openai-completions") !== "anthropic-messages") {
+    next.supportsDeveloperRole = false;
+  }
+  return next;
+}
+
 function migrateRelayProtocols(file: { providers: Record<string, any> }): boolean {
   let changed = false;
   for (const cfg of Object.values(file.providers || {})) {
     if (!cfg || typeof cfg !== "object") continue;
-    const next = normalizeRelayApi(cfg.baseUrl, cfg.api);
-    if (cfg.api !== next) {
-      cfg.api = next;
+    const nextApi = normalizeRelayApi(cfg.baseUrl, cfg.api);
+    if (cfg.api !== nextApi) {
+      cfg.api = nextApi;
+      changed = true;
+    }
+    const nextCompat = defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat);
+    if (JSON.stringify(cfg.compat || {}) !== JSON.stringify(nextCompat)) {
+      cfg.compat = nextCompat;
       changed = true;
     }
   }
@@ -587,15 +604,19 @@ export default function (pi: ExtensionAPI) {
         // If the provider is already in Pi, only replace the model list.
         // Passing baseUrl/apiKey here can wipe /login credentials.
         if (providerModels.length > 0) {
-          pi.registerProvider(provider, { models: configs });
+          pi.registerProvider(provider, {
+            api: normalizeRelayApi(cfg.baseUrl, cfg.api),
+            compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
+            models: configs,
+          });
         } else {
           pi.registerProvider(provider, {
             name: cfg.name || provider,
             baseUrl: cfg.baseUrl,
-            api: cfg.api || "openai-completions",
+            api: normalizeRelayApi(cfg.baseUrl, cfg.api),
             apiKey: cfg.apiKey,
             authHeader: cfg.authHeader !== false,
-            compat: cfg.compat,
+            compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
             headers: cfg.headers,
             models: configs,
           });
@@ -1503,13 +1524,16 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("save_provider", "请填写 API Key"));
             break;
           }
-          const compat = command.compat && typeof command.compat === "object"
-            ? command.compat
-            : previous.compat || {
-                supportsDeveloperRole: false,
-                supportsReasoningEffort: true,
-                maxTokensField: "max_tokens",
-              };
+          const compat = defaultRelayCompat(
+            baseUrl,
+            api,
+            command.compat && typeof command.compat === "object"
+              ? command.compat
+              : previous.compat || {
+                  supportsReasoningEffort: true,
+                  maxTokensField: "max_tokens",
+                },
+          );
           let models = Array.isArray(previous.models) ? previous.models : [];
           let fetchError = "";
           if (command.fetchModels !== false) {

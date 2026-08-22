@@ -5,18 +5,60 @@
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
 import { t } from './i18n.js';
 
+let katexLoader = null;
+function loadKatex() {
+  if (typeof renderMathInElement === 'function') return Promise.resolve();
+  if (katexLoader) return katexLoader;
+  katexLoader = new Promise((resolve) => {
+    const done = () => resolve();
+    if (!document.querySelector('link[data-katex]')) {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'vendor/katex/katex.min.css';
+      css.dataset.katex = '1';
+      document.head.appendChild(css);
+    }
+    const finish = () => {
+      if (typeof renderMathInElement === 'function') {
+        done();
+        return;
+      }
+      const auto = document.createElement('script');
+      auto.src = 'vendor/katex/contrib/auto-render.min.js';
+      auto.onload = done;
+      auto.onerror = done;
+      document.head.appendChild(auto);
+    };
+    if (typeof katex !== 'undefined') {
+      finish();
+      return;
+    }
+    const js = document.createElement('script');
+    js.src = 'vendor/katex/katex.min.js';
+    js.onload = finish;
+    js.onerror = done;
+    document.head.appendChild(js);
+  });
+  return katexLoader;
+}
+
 export class MessageRenderer {
   constructor(container) {
     this.container = container;
     this.isNearBottom = true;
     this._thinkingTimers = new Map();
+    this._scrollPending = false;
 
-    // Track scroll position for smart auto-scroll
     this.container.addEventListener('scroll', () => {
-      const threshold = 100;
-      this.isNearBottom =
-        this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
-    });
+      if (this._scrollPending) return;
+      this._scrollPending = true;
+      requestAnimationFrame(() => {
+        this._scrollPending = false;
+        const threshold = 100;
+        this.isNearBottom =
+          this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
+      });
+    }, { passive: true });
   }
 
   clear() {
@@ -30,7 +72,8 @@ export class MessageRenderer {
    * Safe to call on streaming/escaped content — KaTeX only processes $...$ patterns.
    */
   _renderMath(element) {
-    if (typeof renderMathInElement !== 'undefined') {
+    const paint = () => {
+      if (typeof renderMathInElement !== 'function') return;
       try {
         renderMathInElement(element, {
           delimiters: [
@@ -39,10 +82,13 @@ export class MessageRenderer {
           ],
           throwOnError: false,
         });
-      } catch (e) {
-        // KaTeX not loaded or rendering failed — math stays as raw TeX
-      }
+      } catch {}
+    };
+    if (typeof renderMathInElement === 'function') {
+      paint();
+      return;
     }
+    loadKatex().then(paint);
   }
 
   renderWelcome() {
@@ -383,17 +429,19 @@ export class MessageRenderer {
   flushPendingMath() {
     const pending = this.container.querySelectorAll('[data-pending-math="1"]');
     if (pending.length === 0) return;
-    let i = 0;
-    const step = () => {
-      const deadline = performance.now() + 8;
-      while (i < pending.length && performance.now() < deadline) {
-        const el = pending[i];
-        el.removeAttribute('data-pending-math');
-        this._renderMath(el);
-        i++;
-      }
-      if (i < pending.length) setTimeout(step, 12);
-    };
-    step();
+    loadKatex().then(() => {
+      let i = 0;
+      const step = () => {
+        const deadline = performance.now() + 8;
+        while (i < pending.length && performance.now() < deadline) {
+          const el = pending[i];
+          el.removeAttribute('data-pending-math');
+          this._renderMath(el);
+          i++;
+        }
+        if (i < pending.length) setTimeout(step, 12);
+      };
+      step();
+    });
   }
 }
