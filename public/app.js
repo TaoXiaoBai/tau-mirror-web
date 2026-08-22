@@ -41,7 +41,13 @@ const sidebarOverlay = document.getElementById('sidebar-overlay');
 
 const refreshSessionsBtn = document.getElementById('refresh-sessions-btn');
 const sessionSearchInput = document.getElementById('session-search-input');
-const typingIndicator = document.getElementById('typing-indicator');
+const workStatusEl = document.getElementById('work-status');
+const workStatusText = document.getElementById('work-status-text');
+const workStatusElapsed = document.getElementById('work-status-elapsed');
+let workPhase = 'idle';
+let workStartedAt = 0;
+let workElapsedTimer = null;
+let activeToolName = '';
 
 const sessionCostEl = document.getElementById('session-cost');
 const tokenUsageEl = document.getElementById('token-usage');
@@ -288,9 +294,8 @@ function showNewMessageBadge() {
 
 wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
-  // Delay secondary fetches so mirror_sync rendering finishes first
-  // and the Pi backend has time to fully initialize after restart
-  setTimeout(fetchContextWindow, 5000);
+  // First paint uses the local registry. Do not hit every provider on connect.
+  if (!availableModels.length) setTimeout(() => fetchModelInfo(), 80);
 });
 
 wsClient.addEventListener('disconnected', () => {
@@ -408,7 +413,7 @@ function handleCompactionEnd(event) {
 function handleAgentStart() {
   lastShownErrorKey = '';
   state.setStreaming(true);
-  showTypingIndicator(true);
+  setWorkPhase('starting');
   updateUI();
 }
 
@@ -420,7 +425,7 @@ function handleAgentEnd(event) {
     showChatError(last.errorMessage);
   }
   state.setStreaming(false);
-  showTypingIndicator(false);
+  setWorkPhase('idle');
   currentStreamingElement = null;
   currentStreamingText = '';
   updateUI();
@@ -538,11 +543,13 @@ function handleMessageUpdate(event) {
     const delta = assistantMessageEvent.delta || '';
     currentStreamingThinking += delta;
     pendingThinkingDelta += delta;
+    setWorkPhase('thinking');
     scheduleStreamingFlush();
   } else if (assistantMessageEvent.type === 'text_delta') {
     const delta = assistantMessageEvent.delta || '';
     currentStreamingText += delta;
     pendingTextDelta += delta;
+    setWorkPhase('writing');
     scheduleStreamingFlush();
   }
 }
@@ -593,6 +600,8 @@ function handleToolExecutionStart(event) {
     status: 'pending',
   });
 
+  activeToolName = toolName || '';
+  setWorkPhase('tool');
   toolCardRenderer.createToolCard(state.getToolExecution(toolCallId));
 }
 
@@ -619,6 +628,7 @@ function handleToolExecutionEnd(event) {
   });
 
   toolCardRenderer.finalizeToolCard(toolCallId, result, isError);
+  if (state.isStreaming) setWorkPhase(currentStreamingText ? 'writing' : 'starting');
 }
 
 function handleExtensionUIRequest(event) {
@@ -928,8 +938,8 @@ function flushQueue() {
 
 abortBtn.addEventListener('click', () => {
   wsClient.send({ type: 'abort' });
-  showToast('已停止生成', 'info', 1800);
-  showTypingIndicator(false);
+  showToast(t('stoppedGen'), 'info', 1800);
+  setWorkPhase('idle');
 });
 
 // ═══════════════════════════════════════
@@ -1188,6 +1198,7 @@ function updateThinkingBtn() {
 
 async function fetchModelInfo(options = {}) {
   try {
+    const needProviders = options.refreshProviderMetadata === true || options.includeProviders === true;
     const [modelsResp, stateResp, providersResp] = await Promise.all([
       fetch('/api/rpc', {
         method: 'POST',
@@ -1198,7 +1209,9 @@ async function fetchModelInfo(options = {}) {
         }),
       }),
       fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_state' }) }),
-      fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_providers' }) }).catch(() => null),
+      needProviders
+        ? fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_providers' }) }).catch(() => null)
+        : Promise.resolve(null),
     ]);
     if (!modelsResp.ok || !stateResp.ok) throw new Error('Failed to fetch models');
     const modelsData = await modelsResp.json();
@@ -1267,6 +1280,7 @@ function toggleModelDropdown() {
 
 function openModelDropdown() {
   closeThinkingMenu();
+  if (!relayProviders.length) loadRelayProviders();
   modelDropdownMenu.innerHTML = '';
 
   const header = document.createElement('div');
@@ -1688,8 +1702,8 @@ document.addEventListener('keydown', (e) => {
 
     if (state.isStreaming) {
       wsClient.send({ type: 'abort' });
-      showToast('已停止生成', 'info', 1800);
-      showTypingIndicator(false);
+      showToast(t('stoppedGen'), 'info', 1800);
+      setWorkPhase('idle');
     } else if (!sidebarEl.classList.contains('collapsed') && window.innerWidth <= 768) {
       toggleSidebar();
     }
@@ -2175,7 +2189,8 @@ function renderSessionHistory(entries) {
     console.log(`[History] Done: ${userCount} users, ${assistantCount} assistants, ${toolCardCount} tools, ${toolResultCount} results`);
     updateCostDisplay();
     updateTokenUsage();
-    fetchContextWindow();
+    if (!availableModels.length) fetchModelInfo();
+    else applyContextWindow(getCurrentModel());
 
     // Batch-process deferred KaTeX math so it doesn't block the initial render.
     messageRenderer.flushPendingMath();
@@ -2229,8 +2244,57 @@ function renderSessionHistory(entries) {
 // UI helpers
 // ═══════════════════════════════════════
 
-function showTypingIndicator(show) {
-  typingIndicator.classList.toggle('hidden', !show);
+function formatElapsed(ms) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return `${min}:${String(rem).padStart(2, '0')}`;
+}
+
+function workStatusCopy(phase) {
+  if (phase === 'thinking') return t('workThinking');
+  if (phase === 'writing') return t('workWriting');
+  if (phase === 'tool') return activeToolName ? t('workToolNamed', { name: activeToolName }) : t('workTool');
+  if (phase === 'starting') return t('workStarting');
+  return '';
+}
+
+function setWorkPhase(phase) {
+  if (phase === workPhase && phase !== 'tool') return;
+  workPhase = phase;
+  if (phase === 'idle') {
+    workStartedAt = 0;
+    activeToolName = '';
+    if (workElapsedTimer) {
+      clearInterval(workElapsedTimer);
+      workElapsedTimer = null;
+    }
+    workStatusEl?.classList.add('hidden');
+    workStatusEl?.classList.remove('thinking', 'writing', 'tool', 'starting');
+    document.querySelector('.input-area')?.classList.remove('working');
+    if (workStatusText) workStatusText.textContent = '';
+    if (workStatusElapsed) workStatusElapsed.textContent = '';
+    if (hasFocus) document.title = originalTitle;
+    return;
+  }
+  if (!workStartedAt) workStartedAt = Date.now();
+  workStatusEl?.classList.remove('hidden', 'thinking', 'writing', 'tool', 'starting');
+  workStatusEl?.classList.add(phase);
+  document.querySelector('.input-area')?.classList.add('working');
+  if (workStatusText) workStatusText.textContent = workStatusCopy(phase);
+  if (workStatusElapsed) workStatusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
+  if (statusText) {
+    statusText.textContent = workStatusCopy(phase) || t('piWorking');
+    statusText.title = t('escStop');
+  }
+  if (!workElapsedTimer) {
+    workElapsedTimer = setInterval(() => {
+      if (!workStartedAt || !workStatusElapsed) return;
+      workStatusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
+    }, 1000);
+  }
+  if (!hasFocus) document.title = `● ${workStatusCopy(phase)} · ${originalTitle}`;
 }
 
 function updateCostDisplay() {
@@ -2333,7 +2397,7 @@ function updateUI() {
   if (isStreaming) {
     statusIndicator.classList.add('streaming');
     statusIndicator.classList.remove('connected');
-    statusText.textContent = t('piWorking');
+    statusText.textContent = workStatusCopy(workPhase) || t('piWorking');
     statusText.title = t('escStop');
   } else {
     statusIndicator.classList.remove('streaming');

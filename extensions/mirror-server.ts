@@ -495,13 +495,11 @@ export default function (pi: ExtensionAPI) {
     dirs.push(path.join(USER_HOME, "AppData", "Roaming", "npm", "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data"));
     const dir = dirs.find((item) => fs.existsSync(item));
     if (!dir) return officialCatalog;
-    const files = fs.readdirSync(dir).filter((file) => file.endsWith(".json") && !file.startsWith("."));
-    const ordered = [
-      ...OFFICIAL_PRIMARY_FILES.filter((file) => files.includes(file)),
-      ...files.filter((file) => !OFFICIAL_PRIMARY_FILES.includes(file)),
-    ];
-    for (const file of ordered) {
-      const primary = OFFICIAL_PRIMARY_FILES.includes(file);
+    // Only vendor catalogs. Skip aggregator dumps (OpenRouter / Vercel / Cloudflare)
+    // so first paint does not parse 200KB+ of someone else's model list.
+    const files = OFFICIAL_PRIMARY_FILES.filter((file) => fs.existsSync(path.join(dir, file)));
+    for (const file of files) {
+      const primary = true;
       try {
         const data = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
         const walk = (node: any) => {
@@ -757,17 +755,17 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  // Full model-list sync for relay providers: fetch /v1/models, register the
+  // Full model-list sync for providers: fetch /v1/models, register the
   // discovered models into Pi so they stay selectable, then return a display
-  // list that exactly mirrors the relay (adds new, removes stale).
-  async function syncLiveModels(ctx: ExtensionContext, models: any[], force = false) {
-    const liveSyncProviders = getLiveSyncProviders();
-    const result: any[] = models.filter((model) => !liveSyncProviders.has(model.provider));
-    const file = readModelsFile();
-    const syncProviders = [...liveSyncProviders];
-
-    for (const provider of syncProviders) {
-      try {
+  // list that exactly mirrors the provider (adds new, removes stale).
+  async function syncOneLiveProvider(
+    ctx: ExtensionContext,
+    provider: string,
+    models: any[],
+    file: { providers: Record<string, any> },
+    force: boolean,
+  ): Promise<any[]> {
+    try {
       const cfg = file.providers?.[provider] || {};
       const sample = models.find((model) => model.provider === provider) || (cfg.models?.[0]
         ? { provider, id: normalizeModelId(cfg.models[0].id), baseUrl: cfg.baseUrl }
@@ -776,7 +774,6 @@ export default function (pi: ExtensionAPI) {
       const meta = await fetchProviderModelMetadata(ctx, provider, sample, force);
       const providerModels = models.filter((model) => model.provider === provider);
       if (meta.models.size === 0) {
-        // Relay unreachable: keep the configured models and surface the error.
         const fallback = providerModels.length > 0
           ? providerModels
           : (cfg.models || []).map((model: any) => ({
@@ -788,7 +785,7 @@ export default function (pi: ExtensionAPI) {
               contextWindow: model.contextWindow,
               maxTokens: model.maxTokens,
             }));
-        result.push(...fallback.filter((model: any) => model.id).map((model: any) => {
+        return fallback.filter((model: any) => model.id).map((model: any) => {
           const fileEntry = fileModelEntry(provider, model.id) || model;
           const resolved = resolveModelContext(model.id, fileEntry, null, meta.error);
           return {
@@ -797,8 +794,7 @@ export default function (pi: ExtensionAPI) {
             providerMetadataError: meta.error,
             providerMetadataCheckedAt: meta.fetchedAt,
           };
-        }));
-        continue;
+        });
       }
 
       const existingById = new Map(providerModels.map((model) => [normalizeModelId(model.id), model]));
@@ -807,8 +803,6 @@ export default function (pi: ExtensionAPI) {
         return liveModelConfig(id, fileEntry, upstream);
       });
       try {
-        // If the provider is already in Pi, only replace the model list.
-        // Passing baseUrl/apiKey here can wipe /login credentials.
         if (providerModels.length > 0) {
           pi.registerProvider(provider, {
             api: normalizeRelayApi(cfg.baseUrl, cfg.api),
@@ -831,26 +825,33 @@ export default function (pi: ExtensionAPI) {
         console.warn(`[Mirror] Could not register live models for ${provider}: ${e?.message || e}`);
       }
 
-      for (const [id, upstream] of meta.models) {
+      return [...meta.models.entries()].map(([id, upstream]) => {
         const existing = existingById.get(id);
         const fileEntry = fileModelEntry(provider, id) || existing;
         const config = liveModelConfig(id, fileEntry, upstream);
-        result.push({
+        return {
           ...(existing || {}),
           ...config,
           provider,
           providerMetadataCheckedAt: meta.fetchedAt,
           providerMetadataError: meta.error,
-        });
-      }
-      } catch (e: any) {
-        console.warn(`[Mirror] Live sync failed for ${provider}: ${e?.message || e}`);
-        if (!result.some((model) => model.provider === provider)) {
-          result.push(...models.filter((model) => model.provider === provider));
-        }
-      }
+        };
+      });
+    } catch (e: any) {
+      console.warn(`[Mirror] Live sync failed for ${provider}: ${e?.message || e}`);
+      return models.filter((model) => model.provider === provider);
     }
-    return result;
+  }
+
+  async function syncLiveModels(ctx: ExtensionContext, models: any[], force = false) {
+    const liveSyncProviders = getLiveSyncProviders();
+    const file = readModelsFile();
+    const syncProviders = [...liveSyncProviders];
+    const localOnly = models.filter((model) => !liveSyncProviders.has(model.provider));
+    const chunks = await Promise.all(
+      syncProviders.map((provider) => syncOneLiveProvider(ctx, provider, models, file, force)),
+    );
+    return [...localOnly, ...chunks.flat()];
   }
 
   async function enrichModelsWithProviderMetadata(ctx: ExtensionContext, models: any[], force = false) {
@@ -1408,15 +1409,23 @@ export default function (pi: ExtensionAPI) {
           const force = command.refreshProviderMetadata === true;
           let models = registryModels;
           try {
-            models = await syncLiveModels(ctx, registryModels, force);
-            models = await enrichModelsWithProviderMetadata(ctx, models, force);
+            if (force) {
+              models = await syncLiveModels(ctx, registryModels, true);
+              models = await enrichModelsWithProviderMetadata(ctx, models, true);
+            } else {
+              models = registryModels.map((model: any) => {
+                const fileEntry = fileModelEntry(model.provider, model.id);
+                const resolved = resolveModelContext(model.id, fileEntry || model, null);
+                return { ...model, ...resolved };
+              });
+            }
           } catch (e: any) {
             console.warn(`[Mirror] Model sync failed: ${e?.message || e}`);
             models = registryModels;
           }
           sendTo(ws, success("get_available_models", {
             models,
-            metadataMode: "provider-first",
+            metadataMode: force ? "provider-first" : "local-first",
           }));
           break;
         }
@@ -1908,8 +1917,23 @@ export default function (pi: ExtensionAPI) {
 
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME_TYPES[ext] || "application/octet-stream";
-
-      res.writeHead(200, { "Content-Type": contentType });
+      const etag = `W/"${stats.size}-${stats.mtimeMs.toFixed(0)}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304);
+        res.end();
+        return;
+      }
+      const immutable = ext === ".woff2" || ext === ".woff" || filePath.includes(`${path.sep}vendor${path.sep}`);
+      const cacheControl = ext === ".html"
+        ? "no-cache"
+        : immutable
+          ? "public, max-age=604800, immutable"
+          : "public, max-age=300";
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": cacheControl,
+        ETag: etag,
+      });
       fs.createReadStream(filePath).pipe(res);
     });
   }
