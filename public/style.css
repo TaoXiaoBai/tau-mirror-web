@@ -1748,6 +1748,91 @@ body {
   margin-bottom: 8px;
 }
 
+.model-relay-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-glass);
+}
+
+.model-relay-bar-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.model-relay-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.model-relay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--bg-solid);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.model-relay-row:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-glass-hover);
+}
+
+.model-relay-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.model-relay-row-copy small {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-relay-row-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.model-relay-row-edit {
+  font-size: 12px;
+  color: var(--accent-text);
+  flex-shrink: 0;
+}
+
+.model-relay-add {
+  width: 100%;
+  border: 1px dashed var(--border-hover);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.model-relay-add:hover {
+  background: var(--bg-glass-hover);
+}
+
 .model-dropdown-footer {
   display: flex;
   justify-content: stretch;

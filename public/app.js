@@ -1222,25 +1222,69 @@ function openModelDropdown() {
   search.setAttribute('aria-label', t('searchModels'));
   modelDropdownMenu.appendChild(search);
 
+  const relayBar = document.createElement('div');
+  relayBar.className = 'model-relay-bar';
+  modelDropdownMenu.appendChild(relayBar);
+
   const itemsContainer = document.createElement('div');
   itemsContainer.className = 'model-dropdown-items';
   itemsContainer.setAttribute('role', 'listbox');
   modelDropdownMenu.appendChild(itemsContainer);
 
-  const footer = document.createElement('div');
-  footer.className = 'model-dropdown-footer';
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'model-dropdown-manage';
-  addBtn.textContent = t('addRelay');
-  addBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    showRelayEditor(null);
-  });
-  footer.appendChild(addBtn);
-  modelDropdownMenu.appendChild(footer);
+  function paintRelayBar() {
+    relayBar.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 'model-relay-bar-title';
+    title.textContent = t('relayBarTitle');
+    relayBar.appendChild(title);
+
+    if (!relayProviders.length) {
+      const empty = document.createElement('div');
+      empty.className = 'model-relay-empty';
+      empty.textContent = t('noRelaysHint');
+      relayBar.appendChild(empty);
+    } else {
+      relayProviders.forEach((relay) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'model-relay-row';
+        const copy = document.createElement('span');
+        copy.className = 'model-relay-row-copy';
+        const name = document.createElement('strong');
+        name.textContent = relay.name || relay.id;
+        const url = document.createElement('small');
+        url.textContent = relay.baseUrl || relay.id;
+        copy.append(name, url);
+        const meta = document.createElement('span');
+        meta.className = 'model-relay-row-meta';
+        meta.textContent = t('nModels', { n: relay.modelCount || 0 });
+        const edit = document.createElement('span');
+        edit.className = 'model-relay-row-edit';
+        edit.textContent = t('editRelay');
+        row.append(copy, meta, edit);
+        row.addEventListener('click', (event) => {
+          event.stopPropagation();
+          showRelayEditor(relay);
+        });
+        relayBar.appendChild(row);
+      });
+    }
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'model-relay-add';
+    addBtn.textContent = t('addRelay');
+    addBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      showRelayEditor(null);
+    });
+    relayBar.appendChild(addBtn);
+  }
+
+  paintRelayBar();
   loadRelayProviders().then(() => {
     if (!modelDropdownMenu.classList.contains('hidden') && !modelDropdownMenu.querySelector('.relay-editor')) {
+      paintRelayBar();
       renderItems(search.value);
     }
   });
@@ -1325,8 +1369,8 @@ function openModelDropdown() {
           meta.appendChild(contextBadge);
         }
         const tags = [];
-        if (model.input?.includes('image')) tags.push('图片');
-        if (model.reasoning) tags.push('思考');
+        if (model.input?.includes('image')) tags.push(t('tagImage'));
+        if (model.reasoning) tags.push(t('tagThink'));
         tags.forEach(tag => {
           const badge = document.createElement('span');
           badge.textContent = tag;
@@ -1345,7 +1389,7 @@ function openModelDropdown() {
           const display = formatModelName(model);
           const result = await rpcCommand(
             { type: 'set_model', provider: model.provider, modelId: model.id },
-            `正在切换到 ${display}…`
+            t('switchingTo', { name: display })
           );
           if (!result?.success) {
             await fetchModelInfo();
@@ -1355,7 +1399,7 @@ function openModelDropdown() {
           currentModelProvider = model.provider || '';
           applyContextWindow(model);
           updateModelLabel();
-          showToast(`已切换到 ${display}`, 'success', 2600);
+          showToast(t('switchedTo', { name: display }), 'success', 2600);
           setTimeout(() => fetchModelInfo(), 200);
         });
         itemsContainer.appendChild(el);
