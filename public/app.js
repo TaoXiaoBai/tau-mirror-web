@@ -129,6 +129,8 @@ function humanizeError(error) {
   if (/Connection lost|disconnected/i.test(message)) return t('errDisconnected');
   if (/Session file is invalid|outside the Pi session directory/i.test(message)) return t('errBadSession');
   if (/No context available/i.test(message)) return t('errNoContext');
+  if (/Unknown command:\s*(get_providers|save_provider|delete_provider|test_provider)/i.test(message)) return t('errNeedRestart');
+  if (/Unknown command/i.test(message)) return t('errNeedRestart');
   return message;
 }
 
@@ -1035,6 +1037,7 @@ let currentModelProvider = '';
 let availableModels = [];
 let modelMetadataMode = 'pi-only';
 let relayProviders = [];
+let relayBackendReady = false;
 let currentThinkingLevel = 'off';
 const BUILTIN_MODEL_PROVIDERS = new Set([
   'openai', 'anthropic', 'google', 'google-gemini', 'google-generative-ai',
@@ -1198,6 +1201,9 @@ async function fetchModelInfo(options = {}) {
         const providersData = await providersResp.json();
         if (providersData?.success && Array.isArray(providersData.data?.providers)) {
           relayProviders = providersData.data.providers;
+          relayBackendReady = true;
+        } else {
+          relayBackendReady = false;
         }
       } catch {}
     }
@@ -1284,6 +1290,12 @@ function openModelDropdown() {
     title.className = 'model-relay-bar-title';
     title.textContent = t('relayBarTitle');
     relayBar.appendChild(title);
+    if (!relayBackendReady) {
+      const warn = document.createElement('div');
+      warn.className = 'model-relay-empty';
+      warn.textContent = t('errNeedRestart');
+      relayBar.appendChild(warn);
+    }
 
     const relays = getManageableRelays();
     if (!relays.length) {
@@ -2437,8 +2449,13 @@ async function loadRelayProviders() {
     const data = await resp.json();
     if (data?.success && Array.isArray(data.data?.providers)) {
       relayProviders = data.data.providers;
+      relayBackendReady = true;
+    } else {
+      relayBackendReady = false;
     }
-  } catch {}
+  } catch {
+    relayBackendReady = false;
+  }
 }
 
 function slugifyRelayId(name) {
