@@ -210,9 +210,11 @@ textarea {
 
 /* ---------- model library ---------- */
 .model-dropdown-menu {
+  display: flex;
+  flex-direction: column;
   top: calc(100% + 9px);
   left: 0;
-  width: min(500px, calc(100vw - 36px));
+  width: min(420px, calc(100vw - 36px));
   max-height: min(610px, calc(100vh - 92px));
   padding: 8px;
   overflow: hidden;
@@ -282,7 +284,9 @@ textarea {
 }
 
 .model-dropdown-items {
-  max-height: min(510px, calc(100vh - 180px));
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
@@ -364,8 +368,8 @@ textarea {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  flex-wrap: wrap;
-  max-width: 145px;
+  flex-wrap: nowrap;
+  max-width: 108px;
   flex-shrink: 0;
 }
 
@@ -381,6 +385,9 @@ textarea {
 
 .model-dropdown-item-meta .model-context-badge {
   cursor: pointer;
+  max-width: 58px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-dropdown-item-meta .model-context-badge.context-provider {
@@ -1223,7 +1230,7 @@ textarea {
   }
 
   .model-dropdown-items {
-    max-height: calc(100dvh - 220px);
+    max-height: none;
   }
 
   .thinking-menu {

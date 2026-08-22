@@ -1766,9 +1766,12 @@ body {
 .model-relay-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  flex: 0 0 auto;
+  gap: 4px;
+  max-height: 148px;
+  overflow: auto;
   margin: 0 0 8px;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-glass);
@@ -1795,7 +1798,7 @@ body {
   border: 1px solid var(--border);
   background: var(--bg-solid);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   color: inherit;
   cursor: pointer;
 }

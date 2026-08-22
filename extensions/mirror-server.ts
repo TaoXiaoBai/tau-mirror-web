@@ -465,6 +465,20 @@ export default function (pi: ExtensionAPI) {
 
   type OfficialModelInfo = { contextWindow?: number; maxTokens?: number; name?: string };
   let officialCatalog: Map<string, OfficialModelInfo> | null = null;
+  const OFFICIAL_PRIMARY_FILES = [
+    "openai.json", "openai-codex.json", "anthropic.json", "google.json", "google-vertex.json",
+    "xai.json", "deepseek.json", "mistral.json", "groq.json", "moonshotai.json", "moonshotai-cn.json",
+    "minimax.json", "minimax-cn.json", "zai.json", "zai-coding-cn.json", "kimi-coding.json", "xiaomi.json",
+  ];
+  const GENERIC_MODEL_IDS = new Set([
+    "auto", "default", "latest", "chat", "image", "video", "embedding", "moderation", "router",
+  ]);
+
+  function isDistinctiveModelId(id: string): boolean {
+    const value = String(id || "").toLowerCase();
+    if (!value || GENERIC_MODEL_IDS.has(value)) return false;
+    return /\d/.test(value) || value.length >= 10;
+  }
 
   function loadOfficialCatalog(): Map<string, OfficialModelInfo> {
     if (officialCatalog) return officialCatalog;
@@ -481,8 +495,13 @@ export default function (pi: ExtensionAPI) {
     dirs.push(path.join(USER_HOME, "AppData", "Roaming", "npm", "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data"));
     const dir = dirs.find((item) => fs.existsSync(item));
     if (!dir) return officialCatalog;
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.endsWith(".json") || file.startsWith(".")) continue;
+    const files = fs.readdirSync(dir).filter((file) => file.endsWith(".json") && !file.startsWith("."));
+    const ordered = [
+      ...OFFICIAL_PRIMARY_FILES.filter((file) => files.includes(file)),
+      ...files.filter((file) => !OFFICIAL_PRIMARY_FILES.includes(file)),
+    ];
+    for (const file of ordered) {
+      const primary = OFFICIAL_PRIMARY_FILES.includes(file);
       try {
         const data = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
         const walk = (node: any) => {
@@ -493,8 +512,16 @@ export default function (pi: ExtensionAPI) {
               maxTokens: readPositiveNumber(node.maxTokens ?? node.max_tokens),
               name: node.name,
             };
-            officialCatalog!.set(String(node.id), rec);
-            officialCatalog!.set(String(node.id).toLowerCase(), rec);
+            const id = String(node.id);
+            const addKey = (key: string) => {
+              if (!key || GENERIC_MODEL_IDS.has(key.toLowerCase())) return;
+              if (!officialCatalog!.has(key)) officialCatalog!.set(key, rec);
+              const lower = key.toLowerCase();
+              if (lower && !officialCatalog!.has(lower)) officialCatalog!.set(lower, rec);
+            };
+            addKey(id);
+            const last = id.split(/[\/:]/).filter(Boolean).pop() || "";
+            if (last && last !== id && isDistinctiveModelId(last) && (primary || last === id)) addKey(last);
             return;
           }
           for (const value of Object.values(node)) walk(value);
@@ -516,9 +543,11 @@ export default function (pi: ExtensionAPI) {
     add(trimmed);
     const parts = trimmed.split(/[\/:]/).filter(Boolean);
     const last = parts[parts.length - 1] || trimmed;
-    if (parts.length > 1) add(last);
-    add(last.replace(/-thinking-none$/i, ""));
-    add(last.replace(/-thinking(-[a-z0-9]+)?$/i, ""));
+    if (parts.length > 1 && isDistinctiveModelId(last)) add(last);
+    const strippedNone = last.replace(/-thinking-none$/i, "");
+    const strippedThinking = last.replace(/-thinking(-[a-z0-9]+)?$/i, "");
+    if (strippedNone !== last && isDistinctiveModelId(strippedNone)) add(strippedNone);
+    if (strippedThinking !== last && isDistinctiveModelId(strippedThinking)) add(strippedThinking);
     return out;
   }
 
@@ -708,7 +737,23 @@ export default function (pi: ExtensionAPI) {
       cost: existing?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       ...(resolved.contextWindow ? { contextWindow: resolved.contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
-      ...resolved,
+      contextSource: resolved.contextSource,
+      customContextWindow: resolved.customContextWindow,
+      providerContextWindow: resolved.providerContextWindow,
+      officialContextWindow: resolved.officialContextWindow,
+    };
+  }
+
+  function toPiModelConfig(model: any) {
+    const official = lookupOfficialModel(model.id);
+    return {
+      id: normalizeModelId(model.id),
+      name: model.name || official?.name || normalizeModelId(model.id),
+      reasoning: model.reasoning ?? true,
+      input: model.input || ["text"],
+      cost: model.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: readPositiveNumber(model.contextWindow) || official?.contextWindow || 128000,
+      maxTokens: readPositiveNumber(model.maxTokens) || official?.maxTokens || 16384,
     };
   }
 
@@ -768,7 +813,7 @@ export default function (pi: ExtensionAPI) {
           pi.registerProvider(provider, {
             api: normalizeRelayApi(cfg.baseUrl, cfg.api),
             compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
-            models: configs,
+            models: configs.map(toPiModelConfig),
           });
         } else {
           pi.registerProvider(provider, {
@@ -779,7 +824,7 @@ export default function (pi: ExtensionAPI) {
             authHeader: cfg.authHeader !== false,
             compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
             headers: cfg.headers,
-            models: configs,
+            models: configs.map(toPiModelConfig),
           });
         }
       } catch (e: any) {
@@ -1719,15 +1764,7 @@ export default function (pi: ExtensionAPI) {
               authHeader: nextCfg.authHeader,
               compat: nextCfg.compat,
               headers: nextCfg.headers,
-              models: (nextCfg.models || []).map((m: any) => ({
-                id: normalizeModelId(m.id),
-                name: m.name || normalizeModelId(m.id),
-                reasoning: m.reasoning ?? true,
-                input: m.input || ["text"],
-                cost: m.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-                ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
-              })),
+              models: (nextCfg.models || []).map(toPiModelConfig),
             });
           } catch (e: any) {
             console.warn(`[Mirror] Could not register provider ${id}: ${e?.message || e}`);
@@ -1784,12 +1821,10 @@ export default function (pi: ExtensionAPI) {
           const models = Array.isArray(cfg.models) ? [...cfg.models] : [];
           const idx = models.findIndex((item: any) => normalizeModelId(item?.id) === modelId);
           const prev = idx >= 0 ? models[idx] : { id: modelId };
-          const official = lookupOfficialModel(modelId);
           const next = { ...prev, id: modelId };
           if (reset) {
             delete next.contextCustom;
-            if (official?.contextWindow) next.contextWindow = official.contextWindow;
-            else delete next.contextWindow;
+            delete next.contextWindow;
           } else {
             next.contextWindow = nextWindow;
             next.contextCustom = true;
@@ -1802,15 +1837,7 @@ export default function (pi: ExtensionAPI) {
           providerMetadataCache.delete(provider);
           const resolved = resolveModelContext(modelId, next, null);
           try {
-            const registered = (cfg.models || []).map((m: any) => ({
-              id: normalizeModelId(m.id),
-              name: m.name || normalizeModelId(m.id),
-              reasoning: m.reasoning ?? true,
-              input: m.input || ["text"],
-              cost: m.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-              ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
-            }));
+            const registered = (cfg.models || []).map(toPiModelConfig);
             if (registered.length > 0) {
               pi.registerProvider(provider, {
                 api: normalizeRelayApi(cfg.baseUrl, cfg.api),

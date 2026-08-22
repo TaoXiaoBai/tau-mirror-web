@@ -1129,6 +1129,7 @@ function formatProvider(provider) {
     'newapi-zhyxulei': 'NewAPI',
     'tavern-openai': 'Tavern',
     'newapi-futureppo': 'FuturePPO',
+    'hfy': 'HFY',
   };
   const relay = relayProviders.find(item => item.id === provider);
   return names[provider] || relay?.name || provider || t('unknownProvider');
@@ -1387,7 +1388,7 @@ function openModelDropdown() {
     contextBadge.className = `model-context-badge context-${model.contextSource || (model.contextWindow ? 'pi-registry' : 'unknown')}`;
     contextBadge.dataset.action = 'edit-context';
     contextBadge.textContent = model.contextWindow
-      ? `${formatContextSize(model.contextWindow)} · ${source.short}`
+      ? formatContextSize(model.contextWindow)
       : source.short;
     contextBadge.title = `${source.detail}${t('ctxClickEdit')}`;
     contextBadge.setAttribute('role', 'button');
