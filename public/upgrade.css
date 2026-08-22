@@ -52,8 +52,8 @@ textarea {
 }
 
 .sidebar-header {
-  min-height: 46px;
-  padding: 8px 10px;
+  min-height: 56px;
+  padding: 10px 10px 8px;
   gap: 8px;
   border-bottom: 1px solid var(--tau-divider);
 }
@@ -131,12 +131,12 @@ textarea {
 
 /* ---------- compact header ---------- */
 .header {
-  min-height: 46px;
-  padding: 6px 14px;
-  background: color-mix(in srgb, var(--bg-solid) 88%, transparent);
+  min-height: 56px;
+  padding: 9px 14px;
+  background: color-mix(in srgb, var(--bg-solid) 90%, transparent);
   border-bottom: 1px solid var(--tau-divider);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .header-left,
@@ -159,21 +159,17 @@ textarea {
   min-width: 0;
 }
 
-.model-dropdown-kicker {
-  display: none;
-}
-
 .model-dropdown-btn {
-  max-width: min(240px, 32vw);
-  height: 30px;
+  max-width: min(330px, 38vw);
+  height: 36px;
   padding: 0 10px;
-  gap: 6px;
-  border-radius: 8px;
-  background: var(--bg-glass);
-  border: 1px solid var(--border);
-  font-family: "SF Mono", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 500;
+  gap: 7px;
+  border-radius: 10px;
+  background: var(--tau-surface);
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .model-dropdown-btn:hover,
@@ -183,7 +179,12 @@ textarea {
 }
 
 .model-dropdown-kicker {
-  display: none;
+  padding-right: 7px;
+  border-right: 1px solid var(--tau-divider);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 .model-dropdown-label {
@@ -211,15 +212,15 @@ textarea {
 .model-dropdown-menu {
   display: flex;
   flex-direction: column;
-  top: calc(100% + 6px);
+  top: calc(100% + 9px);
   left: 0;
-  width: min(400px, calc(100vw - 36px));
-  max-height: min(580px, calc(100vh - 84px));
-  padding: 6px;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(610px, calc(100vh - 92px));
+  padding: 8px;
   overflow: hidden;
-  background: var(--bg-solid);
+  background: var(--tau-surface-strong);
   border: 1px solid var(--border-hover);
-  border-radius: 12px;
+  border-radius: 15px;
   box-shadow: var(--tau-soft-shadow);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
@@ -326,12 +327,12 @@ textarea {
 }
 
 .model-dropdown-item {
-  min-height: 44px;
-  margin: 0;
-  padding: 7px 10px;
-  gap: 10px;
+  min-height: 58px;
+  margin: 1px 0;
+  padding: 9px 10px;
+  gap: 12px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 10px;
   font-family: inherit;
 }
 
@@ -352,8 +353,8 @@ textarea {
 
 .model-dropdown-item-name {
   color: var(--text-primary);
-  font-size: 12.5px;
-  font-weight: 560;
+  font-size: 13px;
+  font-weight: 620;
 }
 
 .model-dropdown-item-id {
@@ -433,15 +434,15 @@ textarea {
 }
 
 .thinking-tag {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--thinking-accent);
-  border-radius: 8px;
-  background: var(--bg-glass);
-  color: var(--thinking-accent-text);
-  font-family: "SF Mono", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 500;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--tau-surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 550;
 }
 
 .thinking-tag:hover,
@@ -453,20 +454,20 @@ textarea {
 .thinking-tag.off,
 .thinking-tag.unavailable {
   color: var(--text-dim);
-  border-color: var(--border);
+  border-color: transparent;
 }
 
 /* ---------- plan mode toggle ---------- */
 .plan-tag {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-glass);
-  color: var(--text-dim);
-  font-family: "SF Mono", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 500;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--tau-surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 550;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -560,10 +561,10 @@ textarea {
 /* ---------- low-noise status ---------- */
 .status {
   gap: 6px;
-  padding: 0;
-  border-radius: 0;
+  padding: 5px 7px;
+  border-radius: 8px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10.5px;
   white-space: nowrap;
 }
 
@@ -572,14 +573,23 @@ textarea {
   height: 6px;
 }
 
+.status-indicator.connected {
+  box-shadow: none;
+  animation: none;
+}
+
+.status-indicator.streaming {
+  box-shadow: none;
+}
+
 .status.working {
   min-width: 0;
   max-width: min(34vw, 220px);
   flex-shrink: 1;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--tau-surface));
+  color: var(--text-primary);
 }
 
 .status.working .status-text {
@@ -587,7 +597,7 @@ textarea {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 620;
 }
 
 .status-elapsed {
@@ -602,21 +612,22 @@ textarea {
 }
 
 .input-area.working #chat-form {
-  border-color: var(--border-hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-hover));
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12), 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .pill {
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  background: var(--bg-glass);
-  font-size: 10px;
+  padding: 3px 7px;
+  border: 0;
+  background: var(--tau-surface);
+  font-size: 9.5px;
 }
 
 /* ---------- readable conversation ---------- */
 .messages {
-  padding: 62px clamp(16px, 3vw, 36px) 108px;
-  gap: 8px;
-  scroll-padding-bottom: 108px;
+  padding: 78px clamp(18px, 4vw, 58px) 122px;
+  gap: 12px;
+  scroll-padding-bottom: 120px;
 }
 
 .message,
@@ -640,12 +651,12 @@ textarea {
 
 .message-content {
   font-size: 15px;
-  line-height: 1.7;
+  line-height: 1.78;
 }
 
 .message.assistant .message-content {
   width: 100%;
-  padding: 2px 2px;
+  padding: 6px 2px;
   color: var(--text-primary);
 }
 
@@ -677,11 +688,11 @@ textarea {
 }
 
 .message.user .message-content {
-  max-width: min(78%, 680px);
-  padding: 9px 13px;
-  border-radius: 16px;
+  max-width: min(78%, 720px);
+  padding: 10px 14px;
+  border-radius: 17px 17px 6px 17px;
   font-weight: 450;
-  line-height: 1.6;
+  line-height: 1.65;
   box-shadow: none;
   backdrop-filter: none;
 }
@@ -692,25 +703,25 @@ textarea {
 
 .welcome {
   margin: auto;
-  padding: 72px 20px 80px;
+  padding: 50px 20px 100px;
 }
 
 .welcome-icon {
-  margin-bottom: 10px;
-  opacity: 0.28;
+  margin-bottom: 12px;
+  opacity: 0.62;
 }
 
 .tau-icon-welcome {
-  width: 56px;
-  height: 56px;
-  filter: none;
+  width: 48px;
+  height: 48px;
+  filter: saturate(0.7);
 }
 
 .welcome p {
-  color: var(--text-dim);
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .welcome .hint {
@@ -983,11 +994,11 @@ textarea {
 
 /* ---------- input dock ---------- */
 .input-area {
-  padding: 8px max(16px, calc((100% - var(--tau-readable-width)) / 2)) 12px;
-  background: linear-gradient(to top, var(--bg-solid) 78%, color-mix(in srgb, var(--bg-solid) 82%, transparent));
+  padding: 10px max(18px, calc((100% - var(--tau-readable-width)) / 2)) 14px;
+  background: linear-gradient(to top, var(--bg-solid) 70%, color-mix(in srgb, var(--bg-solid) 88%, transparent));
   border-top: 0;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 #chat-form,
@@ -999,12 +1010,12 @@ textarea {
 }
 
 #chat-form {
-  gap: 8px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  gap: 7px;
+  padding: 5px;
+  border: 1px solid var(--border-hover);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--bg-solid) 94%, var(--text-primary) 6%);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12);
 }
 
 .input-left-actions {
@@ -1019,23 +1030,17 @@ textarea {
 }
 
 #message-input {
-  min-height: 44px;
-  max-height: 160px;
-  padding: 11px 42px 11px 16px;
-  border: 1px solid var(--border) !important;
-  border-radius: 24px;
-  background: var(--bg-glass) !important;
+  min-height: 46px;
+  max-height: 180px;
+  padding: 12px 42px 11px 8px;
+  border: 0 !important;
+  border-radius: 13px;
+  background: transparent !important;
   box-shadow: none !important;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   font-size: 15px;
-  line-height: 1.45;
-}
-
-#message-input:focus {
-  border-color: var(--accent) !important;
-  background: var(--bg-glass-hover) !important;
-  box-shadow: 0 0 0 3px var(--accent-glow) !important;
+  line-height: 1.5;
 }
 
 #message-input::placeholder {
@@ -1227,8 +1232,8 @@ textarea {
   }
 
   .header {
-    min-height: 46px;
-    padding: 6px 9px;
+    min-height: 52px;
+    padding: 7px 9px;
   }
 
   .header-left,
@@ -1260,7 +1265,7 @@ textarea {
 
   .model-dropdown-menu {
     position: fixed;
-    top: 50px;
+    top: 58px;
     left: 9px;
     right: 9px;
     width: auto;
@@ -1273,15 +1278,15 @@ textarea {
 
   .thinking-menu {
     position: fixed;
-    top: 50px;
+    top: 58px;
     left: auto;
     right: 9px;
     width: min(290px, calc(100vw - 18px));
   }
 
   .messages {
-    padding: 56px 13px 104px;
-    gap: 8px;
+    padding: 65px 13px 112px;
+    gap: 10px;
   }
 
   .message-content {
@@ -1302,8 +1307,8 @@ textarea {
   }
 
   #chat-form {
-    gap: 4px;
-    border-radius: 0;
+    gap: 3px;
+    border-radius: 17px;
   }
 
   .input-left-actions {
