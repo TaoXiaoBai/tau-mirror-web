@@ -61,46 +61,52 @@
       <div class="header">
         <div class="header-left">
           <button class="sidebar-toggle" id="sidebar-toggle" title="Show or hide sessions" aria-label="Show or hide sessions" data-i18n-title="toggleSidebar" data-i18n-aria="toggleSidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
-          <div class="model-dropdown" id="model-dropdown">
-            <button class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="switchModel">
-              <span class="model-dropdown-kicker" data-i18n="model">Model</span>
-              <span class="model-dropdown-label" id="model-dropdown-label" data-i18n="readingModels">Loading…</span>
-              <svg class="model-dropdown-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-            <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
+          <div class="header-cluster">
+            <div class="model-dropdown" id="model-dropdown">
+              <button class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="switchModel">
+                <span class="model-dropdown-kicker" data-i18n="model">Model</span>
+                <span class="model-dropdown-label" id="model-dropdown-label" data-i18n="readingModels">Loading…</span>
+                <svg class="model-dropdown-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
+            </div>
+            <button class="model-refresh-btn" id="model-refresh-btn" title="Reload Pi model list" aria-label="Refresh models" data-i18n-title="refreshModels" data-i18n-aria="refreshModels">↻</button>
+            <div class="thinking-control" id="thinking-control">
+              <button class="thinking-tag" id="thinking-btn" title="Set thinking level" aria-haspopup="listbox" aria-expanded="false" data-i18n="thinkingOff" data-i18n-title="setThinking">Thinking: Off</button>
+              <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="Thinking level"></div>
+            </div>
+            <button class="plan-tag" id="plan-mode-btn" title="Toggle plan mode (read-only explore)" aria-pressed="false" data-i18n="planOff" data-i18n-title="planHintOff">Plan: Off</button>
           </div>
-          <button class="model-refresh-btn" id="model-refresh-btn" title="Reload Pi model list" aria-label="Refresh models" data-i18n-title="refreshModels" data-i18n-aria="refreshModels">↻</button>
-          <div class="thinking-control" id="thinking-control">
-            <button class="thinking-tag" id="thinking-btn" title="Set thinking level" aria-haspopup="listbox" aria-expanded="false" data-i18n="thinkingOff" data-i18n-title="setThinking">Thinking: Off</button>
-            <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="Thinking level"></div>
-          </div>
-          <button class="plan-tag" id="plan-mode-btn" title="Toggle plan mode (read-only explore)" aria-pressed="false" data-i18n="planOff" data-i18n-title="planHintOff">Plan: Off</button>
         </div>
         <div class="header-right">
-          <div class="pill session-cost" id="session-cost" title="Cost this session" data-i18n-title="sessionCost"></div>
-          <div style="position: relative;">
-            <div class="pill token-usage" id="token-usage" title="Context usage" data-i18n-title="tokenUsage"></div>
-            <div class="context-viz hidden" id="context-viz">
-              <div class="context-viz-title" data-i18n="contextSpace">Context space</div>
-              <div class="context-bar" id="context-bar"></div>
-              <div class="context-legend" id="context-legend"></div>
-              <div class="context-viz-footer">
-                <span id="context-viz-used"></span>
-                <span id="context-viz-total"></span>
+          <div class="header-cluster header-cluster-metrics">
+            <div class="pill session-cost" id="session-cost" title="Cost this session" data-i18n-title="sessionCost"></div>
+            <div class="token-usage-wrap">
+              <div class="pill token-usage" id="token-usage" title="Context usage" data-i18n-title="tokenUsage"></div>
+              <div class="context-viz hidden" id="context-viz">
+                <div class="context-viz-title" data-i18n="contextSpace">Context space</div>
+                <div class="context-bar" id="context-bar"></div>
+                <div class="context-legend" id="context-legend"></div>
+                <div class="context-viz-footer">
+                  <span id="context-viz-used"></span>
+                  <span id="context-viz-total"></span>
+                </div>
               </div>
             </div>
+            <div class="status" id="status">
+              <span class="status-indicator" id="status-indicator"></span>
+              <span class="status-text" id="status-text" data-i18n="connecting">Connecting…</span>
+              <span class="status-elapsed hidden" id="status-elapsed"></span>
+            </div>
           </div>
-          <div class="status" id="status">
-            <span class="status-indicator" id="status-indicator"></span>
-            <span class="status-text" id="status-text" data-i18n="connecting">Connecting…</span>
-            <span class="status-elapsed hidden" id="status-elapsed"></span>
+          <div class="header-actions">
+            <button class="icon-btn" id="file-sidebar-toggle" title="Project files" aria-label="Open files" data-i18n-title="projectFiles" data-i18n-aria="openFiles">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            </button>
+            <button class="settings-btn" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="settings" data-i18n-aria="settings">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
           </div>
-          <button class="icon-btn" id="file-sidebar-toggle" title="Project files" aria-label="Open files" data-i18n-title="projectFiles" data-i18n-aria="openFiles">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
-          </button>
-          <button class="settings-btn" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="settings" data-i18n-aria="settings">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
         </div>
       </div>
 
