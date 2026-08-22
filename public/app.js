@@ -139,6 +139,7 @@ function humanizeModelError(error) {
   if (/abort/i.test(message) && /user|signal/i.test(message)) return '';
   if (/401|unauthorized|invalid api key|incorrect api key|invalid.?key/i.test(message)) return t('errUnauthorized');
   if (/403|forbidden/i.test(message)) return t('errForbidden');
+  if (/unknown route\s*\/?v1\/responses|\/v1\/responses/i.test(message)) return t('errResponsesRoute');
   if (/404|model.?not.?found|does not exist|unknown model/i.test(message)) return t('errModelUnavailable', { msg: message });
   if (/429|rate limit|too many requests/i.test(message)) return t('errRateLimit');
   if (/402|insufficient|quota|balance|余额不足/i.test(message)) return t('errQuota');

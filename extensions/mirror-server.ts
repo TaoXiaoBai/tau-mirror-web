@@ -95,6 +95,29 @@ const BUILTIN_PROVIDERS = new Set([
 ]);
 const RELAY_APIS = new Set(["openai-completions", "openai-responses", "anthropic-messages"]);
 
+function normalizeRelayApi(baseUrl?: string, api?: string): string {
+  const requested = RELAY_APIS.has(String(api || "")) ? String(api) : "openai-completions";
+  if (requested === "anthropic-messages") return requested;
+  const host = String(baseUrl || "").toLowerCase();
+  const officialOpenAI = /api\.openai\.com/.test(host);
+  // Relays almost never implement /v1/responses. Keep that only for official OpenAI.
+  if (requested === "openai-responses" && !officialOpenAI) return "openai-completions";
+  return requested;
+}
+
+function migrateRelayProtocols(file: { providers: Record<string, any> }): boolean {
+  let changed = false;
+  for (const cfg of Object.values(file.providers || {})) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const next = normalizeRelayApi(cfg.baseUrl, cfg.api);
+    if (cfg.api !== next) {
+      cfg.api = next;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function readModelsFile(): { providers: Record<string, any> } {
   try {
     if (!fs.existsSync(MODELS_JSON_PATH)) return { providers: {} };
@@ -327,6 +350,13 @@ function sendAuthRequired(res: http.ServerResponse) {
 }
 
 export default function (pi: ExtensionAPI) {
+  try {
+    const file = readModelsFile();
+    if (migrateRelayProtocols(file)) writeModelsFile(file);
+  } catch (e: any) {
+    console.warn(`[Mirror] Could not migrate relay protocols: ${e?.message || e}`);
+  }
+
   // Extension event/tool contexts intentionally do not expose session control
   // methods. Register a command so the WebSocket layer can request the same
   // supported reload path as Pi's interactive command context.
@@ -1465,7 +1495,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("save_provider", "请填写以 http:// 或 https:// 开头的 API 地址"));
             break;
           }
-          const api = RELAY_APIS.has(command.api) ? command.api : "openai-completions";
+          const api = normalizeRelayApi(baseUrl, command.api);
           const file = readModelsFile();
           const previous = file.providers[id] || {};
           const apiKey = command.apiKey ? String(command.apiKey) : previous.apiKey;
