@@ -4,7 +4,7 @@
 
 [English](./README.md) · **简体中文**
 
-[Pi](https://github.com/earendil-works/pi-coding-agent) 编程助手的浏览器界面。
+[Pi](https://github.com/earendil-works/pi) 编程助手的浏览器界面。
 
 GitHub 仓库首页默认打开 [英文 README](./README.md)。  
 你现在看的是中文版。

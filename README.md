@@ -4,7 +4,7 @@
 
 **English** · [简体中文](./README.zh-CN.md)
 
-Browser UI for the [Pi](https://github.com/earendil-works/pi-coding-agent) coding agent.
+Browser UI for the [Pi](https://github.com/earendil-works/pi) coding agent.
 
 The GitHub page opens this English README by default.  
 Chinese readers: open [README.zh-CN.md](./README.zh-CN.md).
