@@ -384,12 +384,8 @@ textarea {
   color: var(--success);
 }
 
-.model-dropdown-item-meta .model-context-badge.context-official-profile {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent-text);
-}
-
-.model-dropdown-item-meta .model-context-badge[class*="context-config-fallback"] {
+.model-dropdown-item-meta .model-context-badge.context-unknown,
+.model-dropdown-item-meta .model-context-badge.context-unknown-error {
   background: color-mix(in srgb, var(--warning) 12%, transparent);
   color: color-mix(in srgb, var(--warning) 78%, var(--text-primary));
 }

@@ -1149,24 +1149,20 @@ function formatContextSize(value) {
 
 function contextSourceCopy(model) {
   if (model?.contextSource === 'provider') {
-    return { short: '供应商', detail: '由供应商 /v1/models 实时返回' };
+    return { short: t('ctxProvider'), detail: t('ctxProviderDetail') };
   }
-  if (model?.contextSource === 'official-profile') {
-    return { short: '官方参数', detail: '供应商未返回该字段，使用 GPT-5.6 的 258K 上下文参数' };
+  if (model?.contextSource === 'unknown-error') {
+    return { short: t('ctxUnknown'), detail: t('ctxUnknownErr') };
   }
-  if (String(model?.contextSource || '').startsWith('config-fallback')) {
-    const detail = model.contextSource === 'config-fallback-error'
-      ? '暂时无法读取供应商模型信息，使用 Pi 配置值'
-      : '供应商未返回此模型的上下文长度，使用 Pi 配置值';
-    return { short: '配置', detail };
+  if (model?.contextSource === 'unknown') {
+    return { short: t('ctxUnknown'), detail: t('ctxUnknownDetail') };
   }
-  return { short: 'Pi', detail: '来自 Pi 模型注册信息' };
+  return { short: t('ctxPi'), detail: t('ctxPiDetail') };
 }
 
 function applyContextWindow(model) {
-  if (!model?.contextWindow) return;
-  contextWindowSize = model.contextWindow;
-  contextWindowSource = model.contextSource || 'pi-registry';
+  contextWindowSize = model?.contextWindow || 0;
+  contextWindowSource = model?.contextSource || (model?.contextWindow ? 'pi-registry' : 'unknown');
   updateTokenUsage();
 }
 
@@ -1233,13 +1229,10 @@ async function fetchModelInfo(options = {}) {
 
     if (options.showStatus) {
       const liveCount = availableModels.filter(model => model.contextSource === 'provider').length;
-      const profileCount = availableModels.filter(model => model.contextSource === 'official-profile').length;
-      const fallbackCount = availableModels.filter(model => String(model.contextSource || '').startsWith('config-fallback')).length;
-      const detail = liveCount || profileCount || fallbackCount
-        ? t('modelsLive', { live: liveCount, profile: profileCount, fallback: fallbackCount })
-        : modelMetadataMode === 'pi-only'
-          ? t('modelsPiOnly')
-          : '';
+      const unknownCount = availableModels.filter(model => String(model.contextSource || '').startsWith('unknown')).length;
+      const detail = liveCount || unknownCount
+        ? t('modelsLive', { live: liveCount, unknown: unknownCount })
+        : '';
       showToast(t('modelsLoaded', { n: availableModels.length, detail }), 'success', 3600);
     }
   } catch (error) {
@@ -1378,14 +1371,14 @@ function openModelDropdown() {
 
     const meta = document.createElement('span');
     meta.className = 'model-dropdown-item-meta';
-    if (model.contextWindow) {
-      const source = contextSourceCopy(model);
-      const contextBadge = document.createElement('span');
-      contextBadge.className = `model-context-badge context-${model.contextSource || 'pi-registry'}`;
-      contextBadge.textContent = `${formatContextSize(model.contextWindow)} · ${source.short}`;
-      contextBadge.title = source.detail;
-      meta.appendChild(contextBadge);
-    }
+    const source = contextSourceCopy(model);
+    const contextBadge = document.createElement('span');
+    contextBadge.className = `model-context-badge context-${model.contextSource || (model.contextWindow ? 'pi-registry' : 'unknown')}`;
+    contextBadge.textContent = model.contextWindow
+      ? `${formatContextSize(model.contextWindow)} · ${source.short}`
+      : source.short;
+    contextBadge.title = source.detail;
+    meta.appendChild(contextBadge);
     if (model.input?.includes('image')) {
       const badge = document.createElement('span');
       badge.textContent = t('tagImage');
@@ -2240,12 +2233,10 @@ function updateTokenUsage() {
       tokenUsageEl.classList.add('warning');
     }
     const sourceLabel = contextWindowSource === 'provider'
-      ? '供应商实时值'
-      : contextWindowSource === 'official-profile'
-        ? 'GPT-5.6 官方参数'
-        : String(contextWindowSource).startsWith('config-fallback')
-          ? 'Pi 配置值（供应商未提供）'
-          : 'Pi 模型信息';
+      ? t('ctxProviderDetail')
+      : String(contextWindowSource).startsWith('unknown')
+        ? t('ctxUnknownDetail')
+        : t('ctxPiDetail');
     tokenUsageEl.title = `上下文：${(lastInputTokens / 1000).toFixed(1)}K / ${formatContextSize(contextWindowSize)} · ${sourceLabel}`;
     if (pct >= 80) {
       showCompactButton();

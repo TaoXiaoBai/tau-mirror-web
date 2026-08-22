@@ -443,28 +443,6 @@ export default function (pi: ExtensionAPI) {
     }
     return ids;
   }
-  const LIVE_MODEL_DEFAULTS = {
-    contextWindow: 1000000,
-    maxTokens: 32768,
-    reasoning: true,
-    input: ["text"] as ("text" | "image")[],
-  };
-  const LIVE_MODEL_PROFILES = new Map<string, { contextWindow?: number; maxTokens?: number; reasoning?: boolean; input?: ("text" | "image")[] }>([
-    ["newapi-futureppo/glm-5-2", { contextWindow: 1000000, maxTokens: 32768, reasoning: true, input: ["text", "image"] }],
-    // The cl endpoint omits context_window for its GPT-5.6 aliases.
-    ["ccswitch-cl/OAI/gpt-5.6-sol-thinking-none", { contextWindow: 258000 }],
-    ["ccswitch-cl/OAI/gpt-5.6-sol", { contextWindow: 258000 }],
-    ["ccswitch-cl/OAI/gpt-5.6-luna", { contextWindow: 258000 }],
-  ]);
-  // The cl endpoint currently omits context_window for its GPT-5.6 aliases.
-  // Keep Tau and Pi aligned on the 258K profile while still allowing a future
-  // explicit provider value to take precedence automatically.
-  const MODEL_CONTEXT_PROFILES = new Map<string, number>([
-    ["ccswitch-cl/OAI/gpt-5.6-sol-thinking-none", 258000],
-    ["ccswitch-cl/OAI/gpt-5.6-sol", 258000],
-    ["ccswitch-cl/OAI/gpt-5.6-sol-wm", 258000],
-    ["ccswitch-cl/OAI/gpt-5.6-luna", 258000],
-  ]);
   const providerMetadataCache = new Map<string, { fetchedAt: number; models: Map<string, any>; error?: string }>();
   const PROVIDER_METADATA_TTL = 5 * 60 * 1000;
 
@@ -473,14 +451,61 @@ export default function (pi: ExtensionAPI) {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
   }
 
+  function firstPositive(...values: unknown[]): number | undefined {
+    for (const value of values) {
+      const parsed = readPositiveNumber(value);
+      if (parsed) return parsed;
+    }
+    return undefined;
+  }
+
   function upstreamContextWindow(model: any): number | undefined {
-    return readPositiveNumber(
-      model?.context_window ??
-      model?.contextWindow ??
-      model?.max_context_length ??
-      model?.max_input_tokens ??
-      model?.input_token_limit
+    if (!model || typeof model !== "object") return undefined;
+    return firstPositive(
+      model.context_window,
+      model.contextWindow,
+      model.context_length,
+      model.contextLength,
+      model.max_context_length,
+      model.max_model_len,
+      model.max_input_tokens,
+      model.input_token_limit,
+      model.n_ctx,
+      model.max_position_embeddings,
+      model?.info?.context_length,
+      model?.info?.context_window,
+      model?.meta?.context_length,
+      model?.capabilities?.context_window,
     );
+  }
+
+  function upstreamMaxTokens(model: any): number | undefined {
+    if (!model || typeof model !== "object") return undefined;
+    return firstPositive(
+      model.max_output_tokens,
+      model.maxOutputTokens,
+      model.max_completion_tokens,
+      model.max_tokens,
+      model.maxTokens,
+      model?.info?.max_tokens,
+    );
+  }
+
+  function upstreamReasoning(model: any): boolean | undefined {
+    if (!model || typeof model !== "object") return undefined;
+    if (typeof model.reasoning === "boolean") return model.reasoning;
+    if (typeof model.supports_reasoning === "boolean") return model.supports_reasoning;
+    if (typeof model.thinking === "boolean") return model.thinking;
+    return undefined;
+  }
+
+  function upstreamInput(model: any): ("text" | "image")[] | undefined {
+    const raw = model?.input || model?.input_modalities || model?.modalities?.input || model?.architecture?.input_modalities;
+    if (!Array.isArray(raw)) return undefined;
+    const input = raw.map((item: any) => String(item).toLowerCase());
+    const next: ("text" | "image")[] = ["text"];
+    if (input.some((item: string) => item.includes("image") || item.includes("vision"))) next.push("image");
+    return next;
   }
 
   async function fetchProviderModelMetadata(ctx: ExtensionContext, provider: string, sampleModel: any, force = false) {
@@ -533,27 +558,17 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function liveModelConfig(provider: string, id: string, existing?: any) {
-    if (existing) {
-      return {
-        id,
-        name: existing.name || id,
-        reasoning: existing.reasoning,
-        input: existing.input,
-        cost: existing.cost,
-        contextWindow: existing.contextWindow,
-        maxTokens: existing.maxTokens,
-      };
-    }
-    const profile = LIVE_MODEL_PROFILES.get(`${provider}/${id}`) || {};
+  function liveModelConfig(id: string, existing: any, upstream: any) {
+    const contextWindow = upstreamContextWindow(upstream);
+    const maxTokens = upstreamMaxTokens(upstream);
     return {
       id,
-      name: id,
-      reasoning: profile.reasoning ?? LIVE_MODEL_DEFAULTS.reasoning,
-      input: profile.input ?? LIVE_MODEL_DEFAULTS.input,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: profile.contextWindow ?? LIVE_MODEL_DEFAULTS.contextWindow,
-      maxTokens: profile.maxTokens ?? LIVE_MODEL_DEFAULTS.maxTokens,
+      name: existing?.name || String(upstream?.name || id),
+      reasoning: upstreamReasoning(upstream) ?? existing?.reasoning ?? true,
+      input: upstreamInput(upstream) ?? existing?.input ?? ["text"],
+      cost: existing?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxTokens ? { maxTokens } : {}),
     };
   }
 
@@ -590,8 +605,8 @@ export default function (pi: ExtensionAPI) {
             }));
         result.push(...fallback.filter((model: any) => model.id).map((model: any) => ({
           ...model,
-          contextSource: "config-fallback-error",
-          configuredContextWindow: model.contextWindow,
+          contextWindow: undefined,
+          contextSource: "unknown-error",
           providerMetadataError: meta.error,
           providerMetadataCheckedAt: meta.fetchedAt,
         })));
@@ -599,7 +614,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const existingById = new Map(providerModels.map((model) => [normalizeModelId(model.id), model]));
-      const configs = [...meta.models.keys()].map((id) => liveModelConfig(provider, id, existingById.get(id)));
+      const configs = [...meta.models.entries()].map(([id, upstream]) => liveModelConfig(id, existingById.get(id), upstream));
       try {
         // If the provider is already in Pi, only replace the model list.
         // Passing baseUrl/apiKey here can wipe /login credentials.
@@ -627,30 +642,15 @@ export default function (pi: ExtensionAPI) {
 
       for (const [id, upstream] of meta.models) {
         const existing = existingById.get(id);
-        const profile = LIVE_MODEL_PROFILES.get(`${provider}/${id}`) || {};
+        const config = liveModelConfig(id, existing, upstream);
         const providerContextWindow = upstreamContextWindow(upstream);
-        const configuredContextWindow = existing?.contextWindow ?? profile.contextWindow ?? LIVE_MODEL_DEFAULTS.contextWindow;
-        const displayContextWindow = providerContextWindow || profile.contextWindow || existing?.contextWindow || LIVE_MODEL_DEFAULTS.contextWindow;
         result.push({
           ...(existing || {}),
+          ...config,
           provider,
-          id,
-          name: existing?.name || id,
-          reasoning: profile.reasoning ?? existing?.reasoning ?? LIVE_MODEL_DEFAULTS.reasoning,
-          input: profile.input ?? existing?.input ?? LIVE_MODEL_DEFAULTS.input,
-          cost: existing?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: displayContextWindow,
-          configuredContextWindow,
+          contextWindow: providerContextWindow,
           providerContextWindow,
-          profileContextWindow: profile.contextWindow,
-          maxTokens: profile.maxTokens ?? existing?.maxTokens ?? LIVE_MODEL_DEFAULTS.maxTokens,
-          contextSource: providerContextWindow
-            ? "provider"
-            : profile.contextWindow
-              ? "official-profile"
-              : existing
-                ? "config-fallback-omitted"
-                : "config-fallback-missing",
+          contextSource: providerContextWindow ? "provider" : "unknown",
           providerMetadataCheckedAt: meta.fetchedAt,
           providerMetadataError: meta.error,
         });
@@ -681,31 +681,20 @@ export default function (pi: ExtensionAPI) {
     return models.map((model: any) => {
       if (getLiveSyncProviders().has(model.provider)) return model;
       if (!LIVE_MODEL_METADATA_PROVIDERS.has(model.provider)) {
-        return { ...model, contextSource: "pi-registry", configuredContextWindow: model.contextWindow };
+        return { ...model, contextSource: "pi-registry" };
       }
       const providerResult = metadata.get(model.provider);
       const upstream = providerResult?.models.get(String(model.id));
       const providerContextWindow = upstreamContextWindow(upstream);
-      const configuredContextWindow = model.contextWindow;
-      const profileContextWindow = MODEL_CONTEXT_PROFILES.get(`${model.provider}/${model.id}`);
       return {
         ...model,
-        // Explicit provider metadata always wins. A maintained model profile is
-        // used only when the provider omits the field; Pi's configured value is
-        // the final fallback.
-        contextWindow: providerContextWindow || profileContextWindow || configuredContextWindow,
-        configuredContextWindow,
+        contextWindow: providerContextWindow,
         providerContextWindow,
-        profileContextWindow,
         contextSource: providerContextWindow
           ? "provider"
-          : profileContextWindow
-            ? "official-profile"
-            : providerResult?.error
-              ? "config-fallback-error"
-              : upstream
-                ? "config-fallback-omitted"
-                : "config-fallback-missing",
+          : providerResult?.error
+            ? "unknown-error"
+            : "unknown",
         providerMetadataCheckedAt: providerResult?.fetchedAt,
         providerMetadataError: providerResult?.error,
       };
@@ -1543,13 +1532,15 @@ export default function (pi: ExtensionAPI) {
                 const existingById = new Map(models.map((m: any) => [normalizeModelId(m.id), m]));
                 models = records.map((item) => {
                   const prev = existingById.get(item.id);
+                  const contextWindow = upstreamContextWindow(item.raw);
+                  const maxTokens = upstreamMaxTokens(item.raw);
                   return {
                     id: item.id,
                     name: prev?.name || item.name || item.id,
-                    reasoning: prev?.reasoning ?? true,
-                    input: prev?.input || ["text"],
-                    contextWindow: prev?.contextWindow || 128000,
-                    maxTokens: prev?.maxTokens || 16384,
+                    reasoning: upstreamReasoning(item.raw) ?? prev?.reasoning ?? true,
+                    input: upstreamInput(item.raw) || prev?.input || ["text"],
+                    ...(contextWindow ? { contextWindow } : {}),
+                    ...(maxTokens ? { maxTokens } : {}),
                   };
                 });
               }
@@ -1586,8 +1577,8 @@ export default function (pi: ExtensionAPI) {
                 reasoning: m.reasoning ?? true,
                 input: m.input || ["text"],
                 cost: m.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: m.contextWindow || 128000,
-                maxTokens: m.maxTokens || 16384,
+                ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+                ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
               })),
             });
           } catch (e: any) {
