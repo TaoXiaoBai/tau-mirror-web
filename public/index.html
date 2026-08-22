@@ -203,13 +203,9 @@
     <div class="settings-header">
       <div>
         <h3 data-i18n="settings">Settings</h3>
-        <p class="settings-subtitle" id="settings-subtitle" data-i18n="settingsSubtitle">Theme, thinking, and model relays</p>
+        <p class="settings-subtitle" id="settings-subtitle" data-i18n="settingsSubtitle">Theme, thinking, and language</p>
       </div>
       <button class="settings-close" id="settings-close" aria-label="Close settings" data-i18n-aria="closeSettings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    </div>
-    <div class="settings-tabs" role="tablist" aria-label="设置分类">
-      <button type="button" class="settings-tab active" id="settings-tab-general" data-tab="general" role="tab" aria-selected="true" data-i18n="tabGeneral">General</button>
-      <button type="button" class="settings-tab" id="settings-tab-relay" data-tab="relay" role="tab" aria-selected="false" data-i18n="tabRelay">Relays</button>
     </div>
     <div class="settings-body">
       <div class="settings-pane" id="settings-pane-general">
@@ -247,12 +243,6 @@
             <button class="settings-toggle" id="toggle-auth"></button>
           </div>
         </div>
-      </div>
-      <div class="settings-pane hidden" id="settings-pane-relay">
-        <p class="settings-lead" data-i18n="relayLead">Add NewAPI, HFY, or any OpenAI-compatible relay. After save we fetch models. IDs like /CN/... work.</p>
-        <div id="relay-list" class="relay-list"></div>
-        <button type="button" class="settings-add-btn" id="relay-add-btn" data-i18n="addRelay">Add a relay</button>
-        <div id="relay-editor" class="relay-editor hidden"></div>
       </div>
     </div>
   </div>

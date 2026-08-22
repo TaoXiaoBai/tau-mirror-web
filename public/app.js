@@ -67,7 +67,6 @@ if (langSelect) {
     updateThinkingBtn();
     updateModelLabel();
     updatePlanModeBtn();
-    renderRelayList();
     if (messageInput && !historyResumeBar?.classList.contains('hidden')) {
       messageInput.placeholder = t('inputHistoryPlaceholder');
     } else if (messageInput) {
@@ -1182,23 +1181,23 @@ async function fetchModelInfo(options = {}) {
       const profileCount = availableModels.filter(model => model.contextSource === 'official-profile').length;
       const fallbackCount = availableModels.filter(model => String(model.contextSource || '').startsWith('config-fallback')).length;
       const detail = liveCount || profileCount || fallbackCount
-        ? `，${liveCount} 个来自供应商，${profileCount} 个使用官方参数，${fallbackCount} 个使用配置值`
+        ? t('modelsLive', { live: liveCount, profile: profileCount, fallback: fallbackCount })
         : modelMetadataMode === 'pi-only'
-          ? '，当前会话仅提供 Pi 配置值'
+          ? t('modelsPiOnly')
           : '';
-      showToast(`已读取 ${availableModels.length} 个模型${detail}`, 'success', 3600);
+      showToast(t('modelsLoaded', { n: availableModels.length, detail }), 'success', 3600);
     }
   } catch (error) {
-    if (options.showStatus) showToast('模型列表读取失败，请稍后重试', 'error', 4200);
+    if (options.showStatus) showToast(t('modelsLoadFail'), 'error', 4200);
   }
 }
 
 function updateModelLabel() {
   const model = getCurrentModel();
-  const modelName = model ? formatModelName(model) : (currentModelId || '选择模型');
+  const modelName = model ? formatModelName(model) : (currentModelId || t('pickModel'));
   const provider = formatProvider(currentModelProvider);
   modelDropdownLabel.textContent = modelName;
-  modelDropdownBtn.title = model ? `当前：${provider} · ${modelName}` : '切换模型';
+  modelDropdownBtn.title = model ? t('currentModel', { provider, name: modelName }) : t('switchModel');
   updateThinkingBtn();
 }
 
@@ -1230,17 +1229,21 @@ function openModelDropdown() {
 
   const footer = document.createElement('div');
   footer.className = 'model-dropdown-footer';
-  const manageBtn = document.createElement('button');
-  manageBtn.type = 'button';
-  manageBtn.className = 'model-dropdown-manage';
-  manageBtn.textContent = t('manageRelays');
-  manageBtn.addEventListener('click', (event) => {
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'model-dropdown-manage';
+  addBtn.textContent = t('addRelay');
+  addBtn.addEventListener('click', (event) => {
     event.stopPropagation();
-    closeModelDropdown();
-    openSettings('relay');
+    showRelayEditor(null);
   });
-  footer.appendChild(manageBtn);
+  footer.appendChild(addBtn);
   modelDropdownMenu.appendChild(footer);
+  loadRelayProviders().then(() => {
+    if (!modelDropdownMenu.classList.contains('hidden') && !modelDropdownMenu.querySelector('.relay-editor')) {
+      renderItems(search.value);
+    }
+  });
 
   function renderItems(filter) {
     itemsContainer.innerHTML = '';
@@ -1270,7 +1273,24 @@ function openModelDropdown() {
     groups.forEach((models, provider) => {
       const heading = document.createElement('div');
       heading.className = 'model-dropdown-provider';
-      heading.innerHTML = `<span>${formatProvider(provider)}</span><span>${models.length}</span>`;
+      const relay = relayProviders.find(item => item.id === provider);
+      const meta = document.createElement('span');
+      meta.className = 'model-dropdown-provider-meta';
+      meta.append(document.createTextNode(String(models.length)));
+      if (relay) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'model-dropdown-provider-edit';
+        edit.textContent = t('editRelay');
+        edit.addEventListener('click', (event) => {
+          event.stopPropagation();
+          showRelayEditor(relay);
+        });
+        meta.appendChild(edit);
+      }
+      const name = document.createElement('span');
+      name.textContent = formatProvider(provider);
+      heading.append(name, meta);
       itemsContainer.appendChild(heading);
 
       models.forEach(model => {
@@ -2215,22 +2235,8 @@ function buildThemeGrid() {
   }
 }
 
-function switchSettingsTab(tab) {
-  const next = tab === 'relay' ? 'relay' : 'general';
-  document.querySelectorAll('.settings-tab').forEach(btn => {
-    const active = btn.dataset.tab === next;
-    btn.classList.toggle('active', active);
-    btn.setAttribute('aria-selected', String(active));
-  });
-  document.getElementById('settings-pane-general')?.classList.toggle('hidden', next !== 'general');
-  document.getElementById('settings-pane-relay')?.classList.toggle('hidden', next !== 'relay');
-  const subtitle = document.getElementById('settings-subtitle');
-  if (subtitle) subtitle.textContent = next === 'relay' ? t('settingsSubtitleRelay') : t('settingsSubtitle');
-}
-
-async function openSettings(tab = 'general') {
+async function openSettings() {
   buildThemeGrid();
-  switchSettingsTab(tab);
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
 
@@ -2268,8 +2274,6 @@ async function openSettings(tab = 'general') {
   } catch {
     authSection.style.display = 'none';
   }
-
-  loadRelayProviders();
 }
 
 function closeSettings() {
@@ -2277,15 +2281,9 @@ function closeSettings() {
   settingsOverlay.classList.add('hidden');
 }
 
-settingsBtn.addEventListener('click', () => openSettings('general'));
+settingsBtn.addEventListener('click', () => openSettings());
 settingsClose.addEventListener('click', closeSettings);
 settingsOverlay.addEventListener('click', closeSettings);
-document.querySelectorAll('.settings-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    switchSettingsTab(btn.dataset.tab);
-    if (btn.dataset.tab === 'relay') loadRelayProviders();
-  });
-});
 
 // Auto-compaction toggle
 toggleAutoCompact.addEventListener('click', async () => {
@@ -2335,43 +2333,11 @@ toggleAuth.addEventListener('click', async () => {
 // Relay / 中转站 settings
 // ═══════════════════════════════════════
 
-const relayListEl = document.getElementById('relay-list');
-const relayEditorEl = document.getElementById('relay-editor');
-const relayAddBtn = document.getElementById('relay-add-btn');
 let editingRelayId = null;
 
 async function loadRelayProviders() {
   const data = await rpcCommand({ type: 'get_providers' });
   relayProviders = data?.success && Array.isArray(data.data?.providers) ? data.data.providers : [];
-  renderRelayList();
-}
-
-function renderRelayList() {
-  if (!relayListEl) return;
-  relayListEl.innerHTML = '';
-  if (!relayProviders.length) {
-    const empty = document.createElement('div');
-    empty.className = 'relay-empty';
-    empty.innerHTML = `<strong>${t('noRelays')}</strong><span>${t('noRelaysHint')}</span>`;
-    relayListEl.appendChild(empty);
-    return;
-  }
-  relayProviders.forEach(provider => {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = `relay-item${editingRelayId === provider.id ? ' active' : ''}`;
-    const samples = (provider.sampleModels || []).slice(0, 2).join('  ');
-    row.innerHTML = `
-      <span class="relay-item-copy">
-        <strong>${escapeHtml(provider.name || provider.id)}</strong>
-        <small>${escapeHtml(provider.baseUrl || '')}</small>
-        ${samples ? `<small class="relay-item-samples">${escapeHtml(samples)}</small>` : ''}
-      </span>
-      <span class="relay-item-meta">${provider.modelCount || 0} 个模型</span>
-    `;
-    row.addEventListener('click', () => openRelayEditor(provider));
-    relayListEl.appendChild(row);
-  });
 }
 
 function slugifyRelayId(name) {
@@ -2380,50 +2346,54 @@ function slugifyRelayId(name) {
   return `relay-${Date.now().toString(36)}`;
 }
 
-function openRelayEditor(provider) {
-  if (!relayEditorEl) return;
+function showRelayEditor(provider) {
+  if (!modelDropdownMenu) return;
+  closeThinkingMenu();
   editingRelayId = provider?.id || '';
-  renderRelayList();
-  relayEditorEl.classList.remove('hidden');
-  if (relayAddBtn) relayAddBtn.classList.add('hidden');
   const isNew = !provider;
   const api = provider?.api || 'openai-completions';
-  relayEditorEl.innerHTML = `
-    <div class="relay-editor-title">${isNew ? '添加中转站' : `编辑 ${escapeHtml(provider.name || provider.id)}`}</div>
-    <label class="relay-field">
-      <span>名称</span>
-      <input id="relay-name" class="settings-input relay-input" placeholder="比如 HFY、家里的 NewAPI" value="${escapeHtml(provider?.name || '')}" />
-    </label>
-    <label class="relay-field">
-      <span>接口地址</span>
-      <input id="relay-url" class="settings-input relay-input" placeholder="https://api.example.com/v1" value="${escapeHtml(provider?.baseUrl || '')}" />
-    </label>
-    <label class="relay-field">
-      <span>密钥</span>
-      <input id="relay-key" class="settings-input relay-input" type="password" placeholder="${provider?.apiKeySet ? '已保存，不想改就留空' : '一般是 sk- 开头'}" value="" autocomplete="off" />
-    </label>
-    <details class="relay-advanced" ${isNew ? '' : 'open'}>
-      <summary>高级选项</summary>
+  modelDropdown.classList.add('open');
+  modelDropdownBtn.setAttribute('aria-expanded', 'true');
+  modelDropdownMenu.classList.remove('hidden');
+  modelDropdownMenu.innerHTML = `
+    <div class="relay-editor in-model-menu">
+      <div class="relay-editor-title">${isNew ? t('addRelayTitle') : t('editRelayTitle', { name: escapeHtml(provider.name || provider.id) })}</div>
+      <p class="settings-lead">${t('relayLead')}</p>
       <label class="relay-field">
-        <span>内部 ID</span>
-        <input id="relay-id" class="settings-input relay-input" ${isNew ? '' : 'readonly'} placeholder="保存时自动生成" value="${escapeHtml(provider?.id || '')}" />
+        <span>${t('name')}</span>
+        <input id="relay-name" class="settings-input relay-input" placeholder="${escapeHtml(t('namePh'))}" value="${escapeHtml(provider?.name || '')}" />
       </label>
       <label class="relay-field">
-        <span>接口类型</span>
-        <select id="relay-api" class="settings-input relay-input">
-          <option value="openai-completions" ${api === 'openai-completions' ? 'selected' : ''}>OpenAI 兼容（最常见）</option>
-          <option value="openai-responses" ${api === 'openai-responses' ? 'selected' : ''}>OpenAI Responses</option>
-          <option value="anthropic-messages" ${api === 'anthropic-messages' ? 'selected' : ''}>Anthropic Messages</option>
-        </select>
+        <span>${t('apiUrl')}</span>
+        <input id="relay-url" class="settings-input relay-input" placeholder="https://api.example.com/v1" value="${escapeHtml(provider?.baseUrl || '')}" />
       </label>
-    </details>
-    <div class="relay-actions">
-      <button type="button" class="relay-btn" id="relay-test-btn">先测一下</button>
-      <button type="button" class="relay-btn primary" id="relay-save-btn">保存并同步模型</button>
-      ${isNew ? '' : '<button type="button" class="relay-btn danger" id="relay-delete-btn">删除</button>'}
-      <button type="button" class="relay-btn ghost" id="relay-cancel-btn">取消</button>
+      <label class="relay-field">
+        <span>${t('apiKey')}</span>
+        <input id="relay-key" class="settings-input relay-input" type="password" placeholder="${escapeHtml(provider?.apiKeySet ? t('keySaved') : t('keyPh'))}" value="" autocomplete="off" />
+      </label>
+      <details class="relay-advanced">
+        <summary>${t('advanced')}</summary>
+        <label class="relay-field">
+          <span>${t('internalId')}</span>
+          <input id="relay-id" class="settings-input relay-input" ${isNew ? '' : 'readonly'} placeholder="${escapeHtml(t('idPh'))}" value="${escapeHtml(provider?.id || '')}" />
+        </label>
+        <label class="relay-field">
+          <span>${t('apiType')}</span>
+          <select id="relay-api" class="settings-input relay-input">
+            <option value="openai-completions" ${api === 'openai-completions' ? 'selected' : ''}>${t('apiCompat')}</option>
+            <option value="openai-responses" ${api === 'openai-responses' ? 'selected' : ''}>OpenAI Responses</option>
+            <option value="anthropic-messages" ${api === 'anthropic-messages' ? 'selected' : ''}>Anthropic Messages</option>
+          </select>
+        </label>
+      </details>
+      <div class="relay-actions">
+        <button type="button" class="relay-btn" id="relay-test-btn">${t('testFirst')}</button>
+        <button type="button" class="relay-btn primary" id="relay-save-btn">${t('saveSync')}</button>
+        ${isNew ? '' : `<button type="button" class="relay-btn danger" id="relay-delete-btn">${t('delete')}</button>`}
+        <button type="button" class="relay-btn ghost" id="relay-cancel-btn">${t('cancel')}</button>
+      </div>
+      <div class="relay-status" id="relay-status"></div>
     </div>
-    <div class="relay-status" id="relay-status"></div>
   `;
   const nameInput = document.getElementById('relay-name');
   const idInput = document.getElementById('relay-id');
@@ -2436,18 +2406,8 @@ function openRelayEditor(provider) {
   document.getElementById('relay-test-btn')?.addEventListener('click', testRelayFromEditor);
   document.getElementById('relay-save-btn')?.addEventListener('click', saveRelayFromEditor);
   document.getElementById('relay-delete-btn')?.addEventListener('click', deleteRelayFromEditor);
-  document.getElementById('relay-cancel-btn')?.addEventListener('click', closeRelayEditor);
+  document.getElementById('relay-cancel-btn')?.addEventListener('click', () => openModelDropdown());
   nameInput?.focus();
-}
-
-function closeRelayEditor() {
-  editingRelayId = null;
-  if (relayEditorEl) {
-    relayEditorEl.classList.add('hidden');
-    relayEditorEl.innerHTML = '';
-  }
-  relayAddBtn?.classList.remove('hidden');
-  renderRelayList();
 }
 
 function readRelayEditor() {
@@ -2470,10 +2430,10 @@ function setRelayStatus(text, kind = 'info') {
 async function testRelayFromEditor() {
   const form = readRelayEditor();
   if (!form.baseUrl) {
-    setRelayStatus('先把接口地址填上', 'error');
+    setRelayStatus(t('needUrl'), 'error');
     return;
   }
-  setRelayStatus('正在连中转站…', 'info');
+  setRelayStatus(t('testingRelay'), 'info');
   const data = await rpcCommand({
     type: 'test_provider',
     id: form.id,
@@ -2481,17 +2441,17 @@ async function testRelayFromEditor() {
     apiKey: form.apiKey || undefined,
   });
   if (!data?.success) {
-    setRelayStatus(humanizeError(data?.error) || '连不上，看看地址和密钥', 'error');
+    setRelayStatus(humanizeError(data?.error) || t('testFail'), 'error');
     return;
   }
-  const sample = (data.data.models || []).slice(0, 4).map(m => m.id).join('、');
-  setRelayStatus(`通了，一共 ${data.data.count} 个模型${sample ? `，比如 ${sample}` : ''}`, 'success');
+  const sample = (data.data.models || []).slice(0, 4).map(m => m.id).join(' / ');
+  setRelayStatus(t('testOk', { n: data.data.count, sample: sample ? t('testOkSample', { sample }) : '' }), 'success');
 }
 
 async function saveRelayFromEditor() {
   const form = readRelayEditor();
   if (!form.baseUrl) {
-    setRelayStatus('接口地址还没填', 'error');
+    setRelayStatus(t('needUrl'), 'error');
     return;
   }
   if (!form.id) {
@@ -2499,7 +2459,7 @@ async function saveRelayFromEditor() {
     const idInput = document.getElementById('relay-id');
     if (idInput) idInput.value = form.id;
   }
-  setRelayStatus('正在保存，并帮你把模型拉下来…', 'info');
+  setRelayStatus(t('savingRelay'), 'info');
   const data = await rpcCommand({
     type: 'save_provider',
     ...form,
@@ -2508,40 +2468,35 @@ async function saveRelayFromEditor() {
     apiKey: form.apiKey || undefined,
   });
   if (!data?.success) {
-    setRelayStatus(humanizeError(data?.error) || '没存上，看看填写是否完整', 'error');
+    setRelayStatus(humanizeError(data?.error) || t('saveFail'), 'error');
     return;
   }
   const saved = data.data.provider;
   if (data.data.fetchError) {
-    showToast(`${saved.name || saved.id} 已保存，但模型列表没拉下来`, 'warning', 4200);
-    setRelayStatus(`已保存。模型没拉到：${data.data.fetchError}`, 'error');
+    showToast(t('savedNoModels', { name: saved.name || saved.id }), 'warning', 4200);
+    setRelayStatus(t('savedNoModelsDetail', { err: data.data.fetchError }), 'error');
   } else {
-    showToast(`${saved.name || saved.id} 已保存，${saved.modelCount || 0} 个模型可以用了`, 'success', 3600);
-    setRelayStatus(`好了，${saved.modelCount || 0} 个模型已经出现在左上角列表里。`, 'success');
+    showToast(t('savedOk', { name: saved.name || saved.id, n: saved.modelCount || 0 }), 'success', 3600);
   }
   await loadRelayProviders();
-  editingRelayId = saved.id;
-  const next = relayProviders.find(item => item.id === saved.id);
-  if (next) openRelayEditor(next);
   await fetchModelInfo({ showStatus: false, refreshProviderMetadata: true });
+  openModelDropdown();
 }
 
 async function deleteRelayFromEditor() {
   const form = readRelayEditor();
   if (!form.id) return;
-  if (!confirm(`要删除「${form.name || form.id}」吗？模型列表里对应的项也会消失。`)) return;
+  if (!confirm(t('confirmDelete', { name: form.name || form.id }))) return;
   const data = await rpcCommand({ type: 'delete_provider', id: form.id });
   if (!data?.success) {
-    setRelayStatus(humanizeError(data?.error) || '删除失败', 'error');
+    setRelayStatus(humanizeError(data?.error) || t('deleteFail'), 'error');
     return;
   }
-  showToast(`已删除中转站 ${form.id}`, 'success', 2600);
-  closeRelayEditor();
+  showToast(t('deleted', { id: form.id }), 'success', 2600);
   await loadRelayProviders();
   await fetchModelInfo({ refreshProviderMetadata: true });
+  openModelDropdown();
 }
-
-relayAddBtn?.addEventListener('click', () => openRelayEditor(null));
 
 // Restore saved theme
 const savedTheme = getCurrentTheme();

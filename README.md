@@ -64,8 +64,8 @@ pi
 - Queue a follow-up while Pi is still answering
 
 ### Relays
-- **Settings → Relays** (also **Manage relays** in the model menu)
-- Add name, base URL, and API key
+- Open the **model menu** (top left)
+- Each relay group has **Edit**; the footer is **Add a relay**
 - Test the connection, then save and sync `/v1/models`
 - Leading slashes in model IDs are kept (`/CN/gpt-4o` stays `/CN/gpt-4o`)
 
