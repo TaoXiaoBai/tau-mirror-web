@@ -86,6 +86,118 @@ const USER_HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(USER_HOME, ".pi", "agent");
 const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || path.join(PI_AGENT_DIR, "sessions");
 const INSTANCES_DIR = path.join(USER_HOME, ".pi", "tau-instances");
+const MODELS_JSON_PATH = path.join(PI_AGENT_DIR, "models.json");
+const BUILTIN_PROVIDERS = new Set([
+  "openai", "anthropic", "google", "google-gemini", "google-generative-ai",
+  "google-vertex", "amazon-bedrock", "azure", "azure-openai", "groq",
+  "mistral", "openrouter", "xai", "grok", "cerebras", "github-copilot",
+  "opencode", "cloudflare", "vercel", "together", "fireworks",
+]);
+const RELAY_APIS = new Set(["openai-completions", "openai-responses", "anthropic-messages"]);
+
+function readModelsFile(): { providers: Record<string, any> } {
+  try {
+    if (!fs.existsSync(MODELS_JSON_PATH)) return { providers: {} };
+    const parsed = JSON.parse(fs.readFileSync(MODELS_JSON_PATH, "utf8"));
+    if (!parsed || typeof parsed !== "object") return { providers: {} };
+    if (!parsed.providers || typeof parsed.providers !== "object") parsed.providers = {};
+    return parsed;
+  } catch {
+    return { providers: {} };
+  }
+}
+
+function writeModelsFile(data: { providers: Record<string, any> }) {
+  fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+  if (fs.existsSync(MODELS_JSON_PATH)) {
+    fs.copyFileSync(MODELS_JSON_PATH, `${MODELS_JSON_PATH}.bak`);
+  }
+  const payload = JSON.stringify(data, null, 2) + "\n";
+  const tmp = `${MODELS_JSON_PATH}.tmp`;
+  fs.writeFileSync(tmp, payload, "utf8");
+  try {
+    fs.renameSync(tmp, MODELS_JSON_PATH);
+  } catch {
+    fs.writeFileSync(MODELS_JSON_PATH, payload, "utf8");
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+function normalizeModelId(id: unknown): string {
+  // Keep leading slashes (HFY /CN/...) and internal slashes exactly.
+  return String(id ?? "").trim();
+}
+
+function maskApiKey(key?: string): { set: boolean; hint: string } {
+  if (!key) return { set: false, hint: "" };
+  if (key.startsWith("$") || key.startsWith("${")) return { set: true, hint: key };
+  if (key.startsWith("!")) return { set: true, hint: "（命令获取）" };
+  return { set: true, hint: key.length > 8 ? `••••${key.slice(-4)}` : "••••" };
+}
+
+function resolveConfiguredApiKey(value?: string): string {
+  if (!value) return "";
+  if (value.startsWith("$$") || value.startsWith("$!")) return value.slice(1);
+  const envMatch = value.match(/^\$\{([A-Z0-9_]+)\}$/) || value.match(/^\$([A-Z0-9_]+)$/);
+  if (envMatch) return process.env[envMatch[1]] || "";
+  return value;
+}
+
+function isRelayProvider(providerId: string, cfg?: any): boolean {
+  if (!providerId || BUILTIN_PROVIDERS.has(providerId)) return false;
+  const api = String(cfg?.api || "openai-completions");
+  return !!cfg?.baseUrl && RELAY_APIS.has(api);
+}
+
+function summarizeProvider(id: string, cfg: any) {
+  const models = Array.isArray(cfg?.models) ? cfg.models : [];
+  const key = maskApiKey(cfg?.apiKey);
+  return {
+    id,
+    name: cfg?.name || id,
+    baseUrl: cfg?.baseUrl || "",
+    api: cfg?.api || "openai-completions",
+    authHeader: cfg?.authHeader !== false,
+    compat: cfg?.compat || {},
+    apiKeySet: key.set,
+    apiKeyHint: key.hint,
+    modelCount: models.length,
+    sampleModels: models.slice(0, 8).map((m: any) => normalizeModelId(m?.id)).filter(Boolean),
+    liveSync: isRelayProvider(id, cfg),
+  };
+}
+
+async function fetchRelayModelRecords(baseUrl: string, apiKey?: string, extraHeaders?: Record<string, string>) {
+  const url = String(baseUrl || "").replace(/\/+$/, "");
+  if (!url) throw new Error("供应商没有配置 API 地址");
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...(extraHeaders || {}),
+  };
+  if (apiKey && !headers.Authorization && !headers.authorization) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${url}/models`, { headers, signal: controller.signal });
+    if (!response.ok) {
+      let detail = "";
+      try { detail = (await response.text()).slice(0, 240); } catch {}
+      throw new Error(`供应商模型接口返回 HTTP ${response.status}${detail ? `：${detail}` : ""}`);
+    }
+    const payload: any = await response.json();
+    const records = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+    return records
+      .map((item: any) => {
+        const id = normalizeModelId(item?.id ?? item?.name ?? item?.model);
+        return id ? { id, name: String(item?.name || item?.id || id).trim(), raw: item } : null;
+      })
+      .filter(Boolean) as Array<{ id: string; name: string; raw: any }>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // Instance registry — tracks all running Tau servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
@@ -270,7 +382,20 @@ export default function (pi: ExtensionAPI) {
   // Providers whose /v1/models response is the authoritative model list.
   // Tau re-fetches it on refresh, registers discovered models back into Pi, and
   // drops stale entries so the web list follows the relay exactly.
-  const LIVE_MODEL_SYNC_PROVIDERS = new Set(["newapi-futureppo", "ccswitch-cl"]);
+  // Custom 中转站 from models.json are included automatically so HFY /CN models
+  // and newly added relays stay selectable without editing this set.
+  const LIVE_MODEL_SYNC_ALWAYS = new Set(["newapi-futureppo", "ccswitch-cl"]);
+  const MANUAL_MODEL_PROVIDERS = new Set(["tavern-openai", "newapi-zhyxulei"]);
+
+  function getLiveSyncProviders(): Set<string> {
+    const file = readModelsFile();
+    const ids = new Set<string>(LIVE_MODEL_SYNC_ALWAYS);
+    for (const [id, cfg] of Object.entries(file.providers || {})) {
+      if (MANUAL_MODEL_PROVIDERS.has(id)) continue;
+      if (isRelayProvider(id, cfg)) ids.add(id);
+    }
+    return ids;
+  }
   const LIVE_MODEL_DEFAULTS = {
     contextWindow: 1000000,
     maxTokens: 32768,
@@ -316,33 +441,36 @@ export default function (pi: ExtensionAPI) {
     if (!force && cached && Date.now() - cached.fetchedAt < PROVIDER_METADATA_TTL) return cached;
 
     try {
-      const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(sampleModel);
-      if (!resolved.ok) throw new Error("Pi 无法解析此供应商的访问凭据");
-      const baseUrl = String(resolved.baseUrl || sampleModel.baseUrl || "").replace(/\/+$/, "");
+      const fileCfg = readModelsFile().providers?.[provider] || {};
+      let baseUrl = "";
+      let apiKey = "";
+      let headers: Record<string, string> = { Accept: "application/json" };
+
+      if (sampleModel) {
+        try {
+          const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(sampleModel);
+          if (resolved.ok) {
+            baseUrl = String(resolved.baseUrl || sampleModel.baseUrl || "");
+            apiKey = resolved.apiKey || "";
+            headers = { ...headers, ...(resolved.headers || {}) };
+          }
+        } catch {}
+      }
+      if (!baseUrl) baseUrl = String(fileCfg.baseUrl || sampleModel?.baseUrl || "");
+      if (!apiKey) apiKey = resolveConfiguredApiKey(fileCfg.apiKey);
+      if (fileCfg.headers && typeof fileCfg.headers === "object") {
+        headers = { ...headers, ...fileCfg.headers };
+      }
+      baseUrl = baseUrl.replace(/\/+$/, "");
       if (!baseUrl) throw new Error("供应商没有配置 API 地址");
-
-      const headers: Record<string, string> = {
-        Accept: "application/json",
-        ...(resolved.headers || {}),
-      };
-      if (resolved.apiKey && !headers.Authorization && !headers.authorization) {
-        headers.Authorization = `Bearer ${resolved.apiKey}`;
+      if (apiKey && !headers.Authorization && !headers.authorization) {
+        headers.Authorization = `Bearer ${apiKey}`;
       }
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
-      let response: Response;
-      try {
-        response = await fetch(`${baseUrl}/models`, { headers, signal: controller.signal });
-      } finally {
-        clearTimeout(timeout);
-      }
-      if (!response.ok) throw new Error(`供应商模型接口返回 HTTP ${response.status}`);
-      const payload: any = await response.json();
-      const records = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+      const records = await fetchRelayModelRecords(baseUrl, apiKey, headers);
       const result = {
         fetchedAt: Date.now(),
-        models: new Map(records.filter((item: any) => item && item.id).map((item: any) => [String(item.id), item])),
+        models: new Map(records.map((item) => [item.id, item.raw])),
       };
       providerMetadataCache.set(provider, result);
       return result;
@@ -386,21 +514,34 @@ export default function (pi: ExtensionAPI) {
   // discovered models into Pi so they stay selectable, then return a display
   // list that exactly mirrors the relay (adds new, removes stale).
   async function syncLiveModels(ctx: ExtensionContext, models: any[], force = false) {
-    const result: any[] = models.filter((model) => !LIVE_MODEL_SYNC_PROVIDERS.has(model.provider));
-    // Iterate over every live relay provider; each publishes its own model list.
-    const syncProviders = [...new Set(
-      models.filter((model) => LIVE_MODEL_SYNC_PROVIDERS.has(model.provider)).map((model) => model.provider),
-    )];
+    const liveSyncProviders = getLiveSyncProviders();
+    const result: any[] = models.filter((model) => !liveSyncProviders.has(model.provider));
+    const file = readModelsFile();
+    const syncProviders = [...liveSyncProviders];
 
     for (const provider of syncProviders) {
-      const sample = models.find((model) => model.provider === provider);
-      if (!sample) continue;
+      try {
+      const cfg = file.providers?.[provider] || {};
+      const sample = models.find((model) => model.provider === provider) || (cfg.models?.[0]
+        ? { provider, id: normalizeModelId(cfg.models[0].id), baseUrl: cfg.baseUrl }
+        : { provider, id: "default", baseUrl: cfg.baseUrl });
 
       const meta = await fetchProviderModelMetadata(ctx, provider, sample, force);
       const providerModels = models.filter((model) => model.provider === provider);
       if (meta.models.size === 0) {
         // Relay unreachable: keep the configured models and surface the error.
-        result.push(...providerModels.map((model) => ({
+        const fallback = providerModels.length > 0
+          ? providerModels
+          : (cfg.models || []).map((model: any) => ({
+              provider,
+              id: normalizeModelId(model.id),
+              name: model.name || normalizeModelId(model.id),
+              reasoning: model.reasoning,
+              input: model.input,
+              contextWindow: model.contextWindow,
+              maxTokens: model.maxTokens,
+            }));
+        result.push(...fallback.filter((model: any) => model.id).map((model: any) => ({
           ...model,
           contextSource: "config-fallback-error",
           configuredContextWindow: model.contextWindow,
@@ -410,10 +551,25 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
 
-      const existingById = new Map(providerModels.map((model) => [String(model.id), model]));
+      const existingById = new Map(providerModels.map((model) => [normalizeModelId(model.id), model]));
       const configs = [...meta.models.keys()].map((id) => liveModelConfig(provider, id, existingById.get(id)));
       try {
-        pi.registerProvider(provider, { models: configs });
+        // If the provider is already in Pi, only replace the model list.
+        // Passing baseUrl/apiKey here can wipe /login credentials.
+        if (providerModels.length > 0) {
+          pi.registerProvider(provider, { models: configs });
+        } else {
+          pi.registerProvider(provider, {
+            name: cfg.name || provider,
+            baseUrl: cfg.baseUrl,
+            api: cfg.api || "openai-completions",
+            apiKey: cfg.apiKey,
+            authHeader: cfg.authHeader !== false,
+            compat: cfg.compat,
+            headers: cfg.headers,
+            models: configs,
+          });
+        }
       } catch (e: any) {
         console.warn(`[Mirror] Could not register live models for ${provider}: ${e?.message || e}`);
       }
@@ -448,6 +604,12 @@ export default function (pi: ExtensionAPI) {
           providerMetadataError: meta.error,
         });
       }
+      } catch (e: any) {
+        console.warn(`[Mirror] Live sync failed for ${provider}: ${e?.message || e}`);
+        if (!result.some((model) => model.provider === provider)) {
+          result.push(...models.filter((model) => model.provider === provider));
+        }
+      }
     }
     return result;
   }
@@ -466,7 +628,7 @@ export default function (pi: ExtensionAPI) {
     }));
 
     return models.map((model: any) => {
-      if (LIVE_MODEL_SYNC_PROVIDERS.has(model.provider)) return model;
+      if (getLiveSyncProviders().has(model.provider)) return model;
       if (!LIVE_MODEL_METADATA_PROVIDERS.has(model.provider)) {
         return { ...model, contextSource: "pi-registry", configuredContextWindow: model.contextWindow };
       }
@@ -1014,8 +1176,14 @@ export default function (pi: ExtensionAPI) {
           }
           const registryModels = await ctx.modelRegistry.getAvailable();
           const force = command.refreshProviderMetadata === true;
-          let models = await syncLiveModels(ctx, registryModels, force);
-          models = await enrichModelsWithProviderMetadata(ctx, models, force);
+          let models = registryModels;
+          try {
+            models = await syncLiveModels(ctx, registryModels, force);
+            models = await enrichModelsWithProviderMetadata(ctx, models, force);
+          } catch (e: any) {
+            console.warn(`[Mirror] Model sync failed: ${e?.message || e}`);
+            models = registryModels;
+          }
           sendTo(ws, success("get_available_models", {
             models,
             metadataMode: "provider-first",
@@ -1051,11 +1219,16 @@ export default function (pi: ExtensionAPI) {
             break;
           }
           const models = await ctx.modelRegistry.getAvailable();
+          const wantedProvider = String(command.provider || "");
+          const wantedId = normalizeModelId(command.modelId);
           const model = models.find(
-            (m: any) => m.provider === command.provider && m.id === command.modelId
+            (m: any) => m.provider === wantedProvider && normalizeModelId(m.id) === wantedId
           );
           if (!model) {
-            sendTo(ws, error("set_model", `Model not found: ${command.provider}/${command.modelId}`));
+            const sameProvider = models.filter((m: any) => m.provider === wantedProvider).map((m: any) => m.id);
+            sendTo(ws, error("set_model", sameProvider.length
+              ? `没有找到模型 ${wantedProvider} :: ${wantedId}`
+              : `没有找到模型 ${wantedProvider} :: ${wantedId}（该中转站尚未加载）`));
             break;
           }
           const defaults = captureDefaultPreferences();
@@ -1250,6 +1423,145 @@ export default function (pi: ExtensionAPI) {
           saveTauSetting("authEnabled", authEnabled);
           broadcast({ type: "event", event: { type: "auth_changed", enabled: authEnabled } });
           sendTo(ws, success("set_auth", { enabled: authEnabled }));
+          break;
+        }
+
+        case "get_providers": {
+          const file = readModelsFile();
+          const providers = Object.entries(file.providers || {}).map(([id, cfg]) => summarizeProvider(id, cfg));
+          sendTo(ws, success("get_providers", { providers, path: MODELS_JSON_PATH }));
+          break;
+        }
+
+        case "test_provider": {
+          const baseUrl = String(command.baseUrl || "").trim();
+          const existing = readModelsFile().providers?.[String(command.id || "")] || {};
+          const apiKey = command.apiKey ? String(command.apiKey) : resolveConfiguredApiKey(existing.apiKey);
+          try {
+            const records = await fetchRelayModelRecords(baseUrl, apiKey, command.headers);
+            sendTo(ws, success("test_provider", {
+              ok: true,
+              count: records.length,
+              models: records.slice(0, 40).map((item) => ({ id: item.id, name: item.name })),
+            }));
+          } catch (e: any) {
+            sendTo(ws, error("test_provider", e?.name === "AbortError" ? "连接中转站超时" : (e?.message || "无法连接中转站")));
+          }
+          break;
+        }
+
+        case "save_provider": {
+          const id = String(command.id || "").trim();
+          if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(id)) {
+            sendTo(ws, error("save_provider", "中转站 ID 只能用字母开头，并包含字母、数字、下划线或短横线"));
+            break;
+          }
+          if (BUILTIN_PROVIDERS.has(id)) {
+            sendTo(ws, error("save_provider", "不能覆盖 Pi 内置供应商，请换一个 ID"));
+            break;
+          }
+          const baseUrl = String(command.baseUrl || "").trim();
+          if (!/^https?:\/\//i.test(baseUrl)) {
+            sendTo(ws, error("save_provider", "请填写以 http:// 或 https:// 开头的 API 地址"));
+            break;
+          }
+          const api = RELAY_APIS.has(command.api) ? command.api : "openai-completions";
+          const file = readModelsFile();
+          const previous = file.providers[id] || {};
+          const apiKey = command.apiKey ? String(command.apiKey) : previous.apiKey;
+          if (!apiKey) {
+            sendTo(ws, error("save_provider", "请填写 API Key"));
+            break;
+          }
+          const compat = command.compat && typeof command.compat === "object"
+            ? command.compat
+            : previous.compat || {
+                supportsDeveloperRole: false,
+                supportsReasoningEffort: true,
+                maxTokensField: "max_tokens",
+              };
+          let models = Array.isArray(previous.models) ? previous.models : [];
+          let fetchError = "";
+          if (command.fetchModels !== false) {
+            try {
+              const records = await fetchRelayModelRecords(baseUrl, resolveConfiguredApiKey(apiKey), command.headers);
+              if (records.length > 0) {
+                const existingById = new Map(models.map((m: any) => [normalizeModelId(m.id), m]));
+                models = records.map((item) => {
+                  const prev = existingById.get(item.id);
+                  return {
+                    id: item.id,
+                    name: prev?.name || item.name || item.id,
+                    reasoning: prev?.reasoning ?? true,
+                    input: prev?.input || ["text"],
+                    contextWindow: prev?.contextWindow || 128000,
+                    maxTokens: prev?.maxTokens || 16384,
+                  };
+                });
+              }
+            } catch (e: any) {
+              fetchError = e?.message || "拉取模型列表失败";
+            }
+          }
+          const nextCfg = {
+            ...previous,
+            name: String(command.name || previous.name || id),
+            baseUrl: baseUrl.replace(/\/+$/, ""),
+            api,
+            apiKey,
+            authHeader: command.authHeader !== false,
+            compat,
+            models,
+          };
+          if (command.headers && typeof command.headers === "object") nextCfg.headers = command.headers;
+          file.providers[id] = nextCfg;
+          writeModelsFile(file);
+          providerMetadataCache.delete(id);
+          try {
+            pi.registerProvider(id, {
+              name: nextCfg.name,
+              baseUrl: nextCfg.baseUrl,
+              api: nextCfg.api,
+              apiKey: nextCfg.apiKey,
+              authHeader: nextCfg.authHeader,
+              compat: nextCfg.compat,
+              headers: nextCfg.headers,
+              models: (nextCfg.models || []).map((m: any) => ({
+                id: normalizeModelId(m.id),
+                name: m.name || normalizeModelId(m.id),
+                reasoning: m.reasoning ?? true,
+                input: m.input || ["text"],
+                cost: m.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: m.contextWindow || 128000,
+                maxTokens: m.maxTokens || 16384,
+              })),
+            });
+          } catch (e: any) {
+            console.warn(`[Mirror] Could not register provider ${id}: ${e?.message || e}`);
+          }
+          sendTo(ws, success("save_provider", {
+            provider: summarizeProvider(id, nextCfg),
+            fetchError: fetchError || undefined,
+          }));
+          break;
+        }
+
+        case "delete_provider": {
+          const id = String(command.id || "").trim();
+          if (!id) {
+            sendTo(ws, error("delete_provider", "缺少中转站 ID"));
+            break;
+          }
+          const file = readModelsFile();
+          if (!file.providers[id]) {
+            sendTo(ws, error("delete_provider", `没有找到中转站 ${id}`));
+            break;
+          }
+          delete file.providers[id];
+          writeModelsFile(file);
+          providerMetadataCache.delete(id);
+          try { pi.unregisterProvider(id); } catch {}
+          sendTo(ws, success("delete_provider", { id }));
           break;
         }
 

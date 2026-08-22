@@ -191,38 +191,50 @@
   <!-- Settings Panel -->
   <div class="settings-panel hidden" id="settings-panel">
     <div class="settings-header">
-      <h3>设置</h3>
-      <button class="settings-close" id="settings-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      <div>
+        <h3>设置</h3>
+        <p class="settings-subtitle" id="settings-subtitle">主题、思考，以及模型中转站</p>
+      </div>
+      <button class="settings-close" id="settings-close" aria-label="关闭设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="settings-tabs" role="tablist" aria-label="设置分类">
+      <button type="button" class="settings-tab active" id="settings-tab-general" data-tab="general" role="tab" aria-selected="true">常用</button>
+      <button type="button" class="settings-tab" id="settings-tab-relay" data-tab="relay" role="tab" aria-selected="false">中转站</button>
     </div>
     <div class="settings-body">
-      <div class="settings-section">
-        <div class="settings-section-title">外观</div>
-        <div class="theme-grid" id="theme-grid"></div>
+      <div class="settings-pane" id="settings-pane-general">
+        <div class="settings-section">
+          <div class="settings-section-title">外观</div>
+          <div class="theme-grid" id="theme-grid"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">对话</div>
+          <div class="settings-row" id="setting-auto-compact">
+            <span class="settings-label">上下文快满时自动整理</span>
+            <button class="settings-toggle" id="toggle-auto-compact"></button>
+          </div>
+          <div class="settings-row" id="setting-thinking">
+            <span class="settings-label">思考强度</span>
+            <button class="settings-value-btn" id="btn-thinking-level"></button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">显示思考过程</span>
+            <button class="settings-toggle on" id="toggle-show-thinking"></button>
+          </div>
+        </div>
+        <div class="settings-section" id="settings-auth-section" style="display:none">
+          <div class="settings-section-title">访问保护</div>
+          <div class="settings-row">
+            <span class="settings-label">打开网页需要登录</span>
+            <button class="settings-toggle" id="toggle-auth"></button>
+          </div>
+        </div>
       </div>
-      <div class="settings-section">
-        <div class="settings-section-title">助手</div>
-        <div class="settings-row" id="setting-auto-compact">
-          <span class="settings-label">自动整理上下文</span>
-          <button class="settings-toggle" id="toggle-auto-compact"></button>
-        </div>
-        <div class="settings-row" id="setting-thinking">
-          <span class="settings-label">思考强度</span>
-          <button class="settings-value-btn" id="btn-thinking-level"></button>
-        </div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">显示</div>
-        <div class="settings-row">
-          <span class="settings-label">显示思考过程</span>
-          <button class="settings-toggle on" id="toggle-show-thinking"></button>
-        </div>
-      </div>
-      <div class="settings-section" id="settings-auth-section" style="display:none">
-        <div class="settings-section-title">访问保护</div>
-        <div class="settings-row">
-          <span class="settings-label">需要登录</span>
-          <button class="settings-toggle" id="toggle-auth"></button>
-        </div>
+      <div class="settings-pane hidden" id="settings-pane-relay">
+        <p class="settings-lead">把 NewAPI、HFY 这类中转填进来。保存后会自动拉模型，<code>/CN/...</code> 这种名字也能用。</p>
+        <div id="relay-list" class="relay-list"></div>
+        <button type="button" class="settings-add-btn" id="relay-add-btn">添加一个中转站</button>
+        <div id="relay-editor" class="relay-editor hidden"></div>
       </div>
     </div>
   </div>

@@ -1086,7 +1086,14 @@ textarea {
 
 /* ---------- settings ---------- */
 .settings-panel {
-  width: min(390px, calc(100vw - 24px));
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  transform: none;
+  width: min(420px, 100vw);
+  max-height: 100vh;
+  border-radius: 0;
   border-left: 1px solid var(--tau-divider);
   background: var(--tau-surface-strong);
   backdrop-filter: blur(22px);

@@ -91,14 +91,38 @@ function showToast(message, type = 'info', duration = 2600) {
 
 function humanizeError(error) {
   const message = String(error?.message || error || '操作没有完成');
-  if (/No API key/i.test(message)) return '这个模型的凭据暂不可用，请检查 Pi 模型配置';
-  if (/Model not found/i.test(message)) return '没有找到这个模型，请刷新模型列表后重试';
+  if (/No API key/i.test(message)) return '这个模型的凭据暂不可用，请检查中转站 API Key';
+  if (/Model not found|没有找到模型/i.test(message)) return message.includes('::') ? message : '没有找到这个模型，请刷新模型列表后重试';
   if (/Pi is busy/i.test(message)) return 'Pi 正在回答，请等当前回复结束后再操作';
-  if (/Failed to fetch|NetworkError|fetch/i.test(message)) return '网络连接不稳定，请稍后重试';
+  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return '网络连接不稳定，请稍后重试';
   if (/Connection lost|disconnected/i.test(message)) return '与 Pi 的连接已断开，正在等待重连';
   if (/Session file is invalid|outside the Pi session directory/i.test(message)) return '这段历史对话已不存在或无法恢复';
   if (/No context available/i.test(message)) return 'Pi 尚未准备好，请稍后重试';
   return message;
+}
+
+function humanizeModelError(error) {
+  const message = String(error?.message || error || '模型请求失败');
+  if (/abort/i.test(message) && /user|signal/i.test(message)) return '';
+  if (/401|unauthorized|invalid api key|incorrect api key|invalid.?key/i.test(message)) return 'API Key 无效或未授权，请在设置里检查中转站密钥';
+  if (/403|forbidden/i.test(message)) return '中转站拒绝访问（403），请检查账号权限';
+  if (/404|model.?not.?found|does not exist|unknown model/i.test(message)) return `模型不可用：${message}`;
+  if (/429|rate limit|too many requests/i.test(message)) return '请求过于频繁，请稍后再试';
+  if (/402|insufficient|quota|balance|余额不足/i.test(message)) return '中转站余额不足或配额已用完';
+  if (/context.?length|too many tokens|maximum context/i.test(message)) return '上下文超长，请整理会话后再试';
+  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return '无法连接到中转站，请检查地址或网络';
+  return message;
+}
+
+let lastShownErrorKey = '';
+function showChatError(raw, options = {}) {
+  const text = humanizeModelError(raw);
+  if (!text) return;
+  if (text === lastShownErrorKey) return;
+  lastShownErrorKey = text;
+  messageRenderer.renderError(text);
+  if (options.toast !== false) showToast(text, 'error', 7000);
+  showNewMessageBadge();
 }
 
 // File browser
@@ -266,7 +290,7 @@ function handleRPCEvent(event) {
       handleAgentStart();
       break;
     case 'agent_end':
-      handleAgentEnd();
+      handleAgentEnd(event);
       break;
     case 'message_start':
       handleMessageStart(event.message);
@@ -303,6 +327,7 @@ function handleRPCEvent(event) {
       break;
     case 'auto_retry_end':
       if (event.success) showToast('自动重试成功', 'success', 2000);
+      else if (event.error || event.errorMessage) showChatError(event.error || event.errorMessage);
       break;
     case 'plan_mode_state':
       planModeActive = !!event.data?.enabled;
@@ -346,12 +371,19 @@ function handleCompactionEnd(event) {
 }
 
 function handleAgentStart() {
+  lastShownErrorKey = '';
   state.setStreaming(true);
   showTypingIndicator(true);
   updateUI();
 }
 
-function handleAgentEnd() {
+function handleAgentEnd(event) {
+  const msgs = event?.messages || [];
+  const last = [...msgs].reverse().find(m => m.role === 'assistant');
+  if (last && last.stopReason === 'error' && last.errorMessage) {
+    discardEmptyStreamingBubble();
+    showChatError(last.errorMessage);
+  }
   state.setStreaming(false);
   showTypingIndicator(false);
   currentStreamingElement = null;
@@ -442,8 +474,30 @@ function getMessageText(message) {
   return '';
 }
 
+function discardEmptyStreamingBubble() {
+  if (!currentStreamingElement) return false;
+  const hasContent = !!(currentStreamingText || currentStreamingThinking);
+  if (!hasContent) {
+    currentStreamingElement.remove();
+    currentStreamingElement = null;
+    resetStreamingDeltas();
+    currentStreamingThinking = '';
+    return true;
+  }
+  return false;
+}
+
 function handleMessageUpdate(event) {
   const { assistantMessageEvent } = event;
+  if (!assistantMessageEvent) return;
+
+  if (assistantMessageEvent.type === 'error') {
+    const err = assistantMessageEvent.error || {};
+    if (err.stopReason === 'aborted') return;
+    discardEmptyStreamingBubble();
+    showChatError(err.errorMessage || err.message || '模型请求失败');
+    return;
+  }
 
   if (assistantMessageEvent.type === 'thinking_delta') {
     const delta = assistantMessageEvent.delta || '';
@@ -459,6 +513,18 @@ function handleMessageUpdate(event) {
 }
 
 function handleMessageEnd(message) {
+  if (message?.role === 'assistant' && message.stopReason === 'error' && message.errorMessage) {
+    if (!discardEmptyStreamingBubble() && currentStreamingElement) {
+      flushStreamingDeltas();
+      messageRenderer.finalizeStreamingMessage(currentStreamingElement, message.usage || null, currentStreamingThinking);
+      currentStreamingElement = null;
+      currentStreamingThinking = '';
+      resetStreamingDeltas();
+    }
+    showChatError(message.errorMessage);
+    return;
+  }
+
   if (currentStreamingElement) {
     flushStreamingDeltas();
     // Pass usage info for cost display
@@ -812,7 +878,7 @@ function renderQueuedMessages() {
 
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = text == null ? '' : String(text);
   return div.innerHTML;
 }
 
@@ -937,6 +1003,7 @@ let currentModelId = '';
 let currentModelProvider = '';
 let availableModels = [];
 let modelMetadataMode = 'pi-only';
+let relayProviders = [];
 let currentThinkingLevel = 'off';
 
 const THINKING_LEVELS = [
@@ -968,11 +1035,11 @@ const MODEL_HINTS = {
 };
 
 function getModelKey(model) {
-  return `${model?.provider || ''}/${model?.id || ''}`;
+  return `${model?.provider || ''}\x1e${model?.id || ''}`;
 }
 
 function getCurrentModelKey() {
-  return `${currentModelProvider}/${currentModelId}`;
+  return `${currentModelProvider}\x1e${currentModelId}`;
 }
 
 function getCurrentModel() {
@@ -986,7 +1053,8 @@ function formatProvider(provider) {
     'tavern-openai': 'Tavern',
     'newapi-futureppo': 'FuturePPO',
   };
-  return names[provider] || provider || '未知供应商';
+  const relay = relayProviders.find(item => item.id === provider);
+  return names[provider] || relay?.name || provider || '未知供应商';
 }
 
 function formatModelName(model) {
@@ -1038,7 +1106,7 @@ function updateThinkingBtn() {
 
 async function fetchModelInfo(options = {}) {
   try {
-    const [modelsResp, stateResp] = await Promise.all([
+    const [modelsResp, stateResp, providersResp] = await Promise.all([
       fetch('/api/rpc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1048,10 +1116,19 @@ async function fetchModelInfo(options = {}) {
         }),
       }),
       fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_state' }) }),
+      fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_providers' }) }).catch(() => null),
     ]);
     if (!modelsResp.ok || !stateResp.ok) throw new Error('Failed to fetch models');
     const modelsData = await modelsResp.json();
     const stateData = await stateResp.json();
+    if (providersResp && providersResp.ok) {
+      try {
+        const providersData = await providersResp.json();
+        if (providersData?.success && Array.isArray(providersData.data?.providers)) {
+          relayProviders = providersData.data.providers;
+        }
+      } catch {}
+    }
 
     if (modelsData.success && Array.isArray(modelsData.data?.models)) {
       availableModels = modelsData.data.models;
@@ -1110,10 +1187,7 @@ function openModelDropdown() {
 
   const header = document.createElement('div');
   header.className = 'model-dropdown-head';
-  const contextModeCopy = modelMetadataMode === 'provider-first'
-    ? '上下文优先读取供应商'
-    : '上下文来自 Pi 配置';
-  header.innerHTML = `<strong>选择模型</strong><span>${availableModels.length} 个可用 · ${contextModeCopy}</span>`;
+  header.innerHTML = `<strong>选择模型</strong><span>${availableModels.length} 个可用</span>`;
   modelDropdownMenu.appendChild(header);
 
   const search = document.createElement('input');
@@ -1127,6 +1201,20 @@ function openModelDropdown() {
   itemsContainer.className = 'model-dropdown-items';
   itemsContainer.setAttribute('role', 'listbox');
   modelDropdownMenu.appendChild(itemsContainer);
+
+  const footer = document.createElement('div');
+  footer.className = 'model-dropdown-footer';
+  const manageBtn = document.createElement('button');
+  manageBtn.type = 'button';
+  manageBtn.className = 'model-dropdown-manage';
+  manageBtn.textContent = '管理中转站';
+  manageBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeModelDropdown();
+    openSettings('relay');
+  });
+  footer.appendChild(manageBtn);
+  modelDropdownMenu.appendChild(footer);
 
   function renderItems(filter) {
     itemsContainer.innerHTML = '';
@@ -1818,7 +1906,20 @@ function renderSessionHistory(entries) {
 
       const text = textBlocks.map((b) => b.text).join('\n');
 
-      if (text || thinkingBlocks.length > 0) {
+      if (msg.stopReason === 'error' && msg.errorMessage) {
+        assistantCount++;
+        if (text || thinkingBlocks.length > 0) {
+          messageRenderer.renderAssistantMessage(
+            {
+              content: contentBlocks.length > 0 ? contentBlocks : text,
+              usage: msg.usage,
+            },
+            false,
+            true
+          );
+        }
+        messageRenderer.renderError(humanizeModelError(msg.errorMessage));
+      } else if (text || thinkingBlocks.length > 0) {
         assistantCount++;
         messageRenderer.renderAssistantMessage(
           {
@@ -2090,8 +2191,22 @@ function buildThemeGrid() {
   }
 }
 
-async function openSettings() {
+function switchSettingsTab(tab) {
+  const next = tab === 'relay' ? 'relay' : 'general';
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    const active = btn.dataset.tab === next;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  document.getElementById('settings-pane-general')?.classList.toggle('hidden', next !== 'general');
+  document.getElementById('settings-pane-relay')?.classList.toggle('hidden', next !== 'relay');
+  const subtitle = document.getElementById('settings-subtitle');
+  if (subtitle) subtitle.textContent = next === 'relay' ? '添加地址和密钥，模型会自己出现' : '主题、思考，以及模型中转站';
+}
+
+async function openSettings(tab = 'general') {
   buildThemeGrid();
+  switchSettingsTab(tab);
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
 
@@ -2129,6 +2244,8 @@ async function openSettings() {
   } catch {
     authSection.style.display = 'none';
   }
+
+  loadRelayProviders();
 }
 
 function closeSettings() {
@@ -2136,9 +2253,15 @@ function closeSettings() {
   settingsOverlay.classList.add('hidden');
 }
 
-settingsBtn.addEventListener('click', openSettings);
+settingsBtn.addEventListener('click', () => openSettings('general'));
 settingsClose.addEventListener('click', closeSettings);
 settingsOverlay.addEventListener('click', closeSettings);
+document.querySelectorAll('.settings-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    switchSettingsTab(btn.dataset.tab);
+    if (btn.dataset.tab === 'relay') loadRelayProviders();
+  });
+});
 
 // Auto-compaction toggle
 toggleAutoCompact.addEventListener('click', async () => {
@@ -2184,9 +2307,217 @@ toggleAuth.addEventListener('click', async () => {
   }
 });
 
+// ═══════════════════════════════════════
+// Relay / 中转站 settings
+// ═══════════════════════════════════════
 
+const relayListEl = document.getElementById('relay-list');
+const relayEditorEl = document.getElementById('relay-editor');
+const relayAddBtn = document.getElementById('relay-add-btn');
+let editingRelayId = null;
 
+async function loadRelayProviders() {
+  const data = await rpcCommand({ type: 'get_providers' });
+  relayProviders = data?.success && Array.isArray(data.data?.providers) ? data.data.providers : [];
+  renderRelayList();
+}
 
+function renderRelayList() {
+  if (!relayListEl) return;
+  relayListEl.innerHTML = '';
+  if (!relayProviders.length) {
+    const empty = document.createElement('div');
+    empty.className = 'relay-empty';
+    empty.innerHTML = `<strong>还没有中转站</strong><span>填入地址和密钥后，模型会出现在左上角的列表里。</span>`;
+    relayListEl.appendChild(empty);
+    return;
+  }
+  relayProviders.forEach(provider => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `relay-item${editingRelayId === provider.id ? ' active' : ''}`;
+    const samples = (provider.sampleModels || []).slice(0, 2).join('  ');
+    row.innerHTML = `
+      <span class="relay-item-copy">
+        <strong>${escapeHtml(provider.name || provider.id)}</strong>
+        <small>${escapeHtml(provider.baseUrl || '')}</small>
+        ${samples ? `<small class="relay-item-samples">${escapeHtml(samples)}</small>` : ''}
+      </span>
+      <span class="relay-item-meta">${provider.modelCount || 0} 个模型</span>
+    `;
+    row.addEventListener('click', () => openRelayEditor(provider));
+    relayListEl.appendChild(row);
+  });
+}
+
+function slugifyRelayId(name) {
+  const ascii = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (ascii) return ascii.slice(0, 32);
+  return `relay-${Date.now().toString(36)}`;
+}
+
+function openRelayEditor(provider) {
+  if (!relayEditorEl) return;
+  editingRelayId = provider?.id || '';
+  renderRelayList();
+  relayEditorEl.classList.remove('hidden');
+  if (relayAddBtn) relayAddBtn.classList.add('hidden');
+  const isNew = !provider;
+  const api = provider?.api || 'openai-completions';
+  relayEditorEl.innerHTML = `
+    <div class="relay-editor-title">${isNew ? '添加中转站' : `编辑 ${escapeHtml(provider.name || provider.id)}`}</div>
+    <label class="relay-field">
+      <span>名称</span>
+      <input id="relay-name" class="settings-input relay-input" placeholder="比如 HFY、家里的 NewAPI" value="${escapeHtml(provider?.name || '')}" />
+    </label>
+    <label class="relay-field">
+      <span>接口地址</span>
+      <input id="relay-url" class="settings-input relay-input" placeholder="https://api.example.com/v1" value="${escapeHtml(provider?.baseUrl || '')}" />
+    </label>
+    <label class="relay-field">
+      <span>密钥</span>
+      <input id="relay-key" class="settings-input relay-input" type="password" placeholder="${provider?.apiKeySet ? '已保存，不想改就留空' : '一般是 sk- 开头'}" value="" autocomplete="off" />
+    </label>
+    <details class="relay-advanced" ${isNew ? '' : 'open'}>
+      <summary>高级选项</summary>
+      <label class="relay-field">
+        <span>内部 ID</span>
+        <input id="relay-id" class="settings-input relay-input" ${isNew ? '' : 'readonly'} placeholder="保存时自动生成" value="${escapeHtml(provider?.id || '')}" />
+      </label>
+      <label class="relay-field">
+        <span>接口类型</span>
+        <select id="relay-api" class="settings-input relay-input">
+          <option value="openai-completions" ${api === 'openai-completions' ? 'selected' : ''}>OpenAI 兼容（最常见）</option>
+          <option value="openai-responses" ${api === 'openai-responses' ? 'selected' : ''}>OpenAI Responses</option>
+          <option value="anthropic-messages" ${api === 'anthropic-messages' ? 'selected' : ''}>Anthropic Messages</option>
+        </select>
+      </label>
+    </details>
+    <div class="relay-actions">
+      <button type="button" class="relay-btn" id="relay-test-btn">先测一下</button>
+      <button type="button" class="relay-btn primary" id="relay-save-btn">保存并同步模型</button>
+      ${isNew ? '' : '<button type="button" class="relay-btn danger" id="relay-delete-btn">删除</button>'}
+      <button type="button" class="relay-btn ghost" id="relay-cancel-btn">取消</button>
+    </div>
+    <div class="relay-status" id="relay-status"></div>
+  `;
+  const nameInput = document.getElementById('relay-name');
+  const idInput = document.getElementById('relay-id');
+  if (isNew && nameInput && idInput) {
+    nameInput.addEventListener('input', () => {
+      if (!idInput.dataset.manual) idInput.value = slugifyRelayId(nameInput.value);
+    });
+    idInput.addEventListener('input', () => { idInput.dataset.manual = '1'; });
+  }
+  document.getElementById('relay-test-btn')?.addEventListener('click', testRelayFromEditor);
+  document.getElementById('relay-save-btn')?.addEventListener('click', saveRelayFromEditor);
+  document.getElementById('relay-delete-btn')?.addEventListener('click', deleteRelayFromEditor);
+  document.getElementById('relay-cancel-btn')?.addEventListener('click', closeRelayEditor);
+  nameInput?.focus();
+}
+
+function closeRelayEditor() {
+  editingRelayId = null;
+  if (relayEditorEl) {
+    relayEditorEl.classList.add('hidden');
+    relayEditorEl.innerHTML = '';
+  }
+  relayAddBtn?.classList.remove('hidden');
+  renderRelayList();
+}
+
+function readRelayEditor() {
+  return {
+    id: document.getElementById('relay-id')?.value.trim() || '',
+    name: document.getElementById('relay-name')?.value.trim() || '',
+    baseUrl: document.getElementById('relay-url')?.value.trim() || '',
+    apiKey: document.getElementById('relay-key')?.value.trim() || '',
+    api: document.getElementById('relay-api')?.value || 'openai-completions',
+  };
+}
+
+function setRelayStatus(text, kind = 'info') {
+  const el = document.getElementById('relay-status');
+  if (!el) return;
+  el.className = `relay-status ${kind}`;
+  el.textContent = text || '';
+}
+
+async function testRelayFromEditor() {
+  const form = readRelayEditor();
+  if (!form.baseUrl) {
+    setRelayStatus('先把接口地址填上', 'error');
+    return;
+  }
+  setRelayStatus('正在连中转站…', 'info');
+  const data = await rpcCommand({
+    type: 'test_provider',
+    id: form.id,
+    baseUrl: form.baseUrl,
+    apiKey: form.apiKey || undefined,
+  });
+  if (!data?.success) {
+    setRelayStatus(humanizeError(data?.error) || '连不上，看看地址和密钥', 'error');
+    return;
+  }
+  const sample = (data.data.models || []).slice(0, 4).map(m => m.id).join('、');
+  setRelayStatus(`通了，一共 ${data.data.count} 个模型${sample ? `，比如 ${sample}` : ''}`, 'success');
+}
+
+async function saveRelayFromEditor() {
+  const form = readRelayEditor();
+  if (!form.baseUrl) {
+    setRelayStatus('接口地址还没填', 'error');
+    return;
+  }
+  if (!form.id) {
+    form.id = slugifyRelayId(form.name || form.baseUrl);
+    const idInput = document.getElementById('relay-id');
+    if (idInput) idInput.value = form.id;
+  }
+  setRelayStatus('正在保存，并帮你把模型拉下来…', 'info');
+  const data = await rpcCommand({
+    type: 'save_provider',
+    ...form,
+    name: form.name || form.id,
+    fetchModels: true,
+    apiKey: form.apiKey || undefined,
+  });
+  if (!data?.success) {
+    setRelayStatus(humanizeError(data?.error) || '没存上，看看填写是否完整', 'error');
+    return;
+  }
+  const saved = data.data.provider;
+  if (data.data.fetchError) {
+    showToast(`${saved.name || saved.id} 已保存，但模型列表没拉下来`, 'warning', 4200);
+    setRelayStatus(`已保存。模型没拉到：${data.data.fetchError}`, 'error');
+  } else {
+    showToast(`${saved.name || saved.id} 已保存，${saved.modelCount || 0} 个模型可以用了`, 'success', 3600);
+    setRelayStatus(`好了，${saved.modelCount || 0} 个模型已经出现在左上角列表里。`, 'success');
+  }
+  await loadRelayProviders();
+  editingRelayId = saved.id;
+  const next = relayProviders.find(item => item.id === saved.id);
+  if (next) openRelayEditor(next);
+  await fetchModelInfo({ showStatus: false, refreshProviderMetadata: true });
+}
+
+async function deleteRelayFromEditor() {
+  const form = readRelayEditor();
+  if (!form.id) return;
+  if (!confirm(`要删除「${form.name || form.id}」吗？模型列表里对应的项也会消失。`)) return;
+  const data = await rpcCommand({ type: 'delete_provider', id: form.id });
+  if (!data?.success) {
+    setRelayStatus(humanizeError(data?.error) || '删除失败', 'error');
+    return;
+  }
+  showToast(`已删除中转站 ${form.id}`, 'success', 2600);
+  closeRelayEditor();
+  await loadRelayProviders();
+  await fetchModelInfo({ refreshProviderMetadata: true });
+}
+
+relayAddBtn?.addEventListener('click', () => openRelayEditor(null));
 
 // Restore saved theme
 const savedTheme = getCurrentTheme();

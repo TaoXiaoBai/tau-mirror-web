@@ -312,9 +312,21 @@ export class MessageRenderer {
   }
 
   renderError(errorMessage) {
+    const welcome = this.container.querySelector('.welcome');
+    if (welcome) welcome.remove();
     const div = document.createElement('div');
     div.className = 'error-message';
-    div.textContent = `⚠️ ${errorMessage}`;
+    div.setAttribute('role', 'alert');
+    const title = document.createElement('div');
+    title.className = 'error-message-title';
+    title.textContent = '刚才没回答成功';
+    const body = document.createElement('div');
+    body.className = 'error-message-body';
+    body.textContent = errorMessage;
+    const hint = document.createElement('div');
+    hint.className = 'error-message-hint';
+    hint.textContent = '可以打开右上角设置 → 中转站，检查地址和密钥。';
+    div.append(title, body, hint);
     this.container.appendChild(div);
     this.scrollToBottom();
   }
