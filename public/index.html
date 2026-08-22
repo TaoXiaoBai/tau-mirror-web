@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pi 助手 · Tau</title>
+  <title>Pi Assistant · Tau</title>
   <link rel="icon" type="image/png" href="icons/tau-192.png">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -12,13 +12,22 @@
   <meta name="apple-mobile-web-app-title" content="Tau">
   <meta name="theme-color" content="#f5f3ef">
   <script>
-    // Apply theme BEFORE CSS loads — prevents flash of wrong colors on reload
+    // Apply theme + language BEFORE CSS/UI paint
     (function(){
       var t=localStorage.getItem('tau-theme');
       if(t==='dark')t='night';if(t==='light')t='terracotta';
       var v=['night','dawn','midnight','clean','terracotta','sage'];
       if(!t||v.indexOf(t)===-1)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)?'terracotta':'night';
       document.documentElement.setAttribute('data-theme',t);
+      var pref=localStorage.getItem('tau-lang');
+      var zh=false;
+      if(pref==='zh')zh=true;
+      else if(pref!=='en'){
+        var langs=[].concat(navigator.languages||[],[navigator.language,navigator.userLanguage]).filter(Boolean);
+        zh=langs.some(function(l){return String(l).toLowerCase().indexOf('zh')===0;});
+      }
+      document.documentElement.lang=zh?'zh-CN':'en';
+      document.title=zh?'Pi 助手 · Tau':'Pi Assistant · Tau';
     })();
   </script>
   <link rel="stylesheet" href="style.css">
@@ -34,16 +43,16 @@
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="mode-toggle" id="mode-toggle">
-          <span class="mode-link active" title="Pi 对话"><img src="icons/tau-192.png" alt="Tau" class="tau-icon"></span>
+          <span class="mode-link active" data-i18n-title="welcomeHi" title="Pi"><img src="icons/tau-192.png" alt="Tau" class="tau-icon"></span>
         </div>
-        <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="搜索会话或内容" autocomplete="off" aria-label="搜索会话" />
+        <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search sessions or content" autocomplete="off" aria-label="Search sessions" data-i18n-placeholder="searchSessions" data-i18n-aria="searchSessionsAria" />
         <div class="sidebar-actions">
-          <button class="icon-btn" id="new-session-btn" title="新建会话" aria-label="新建会话"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
-          <button class="icon-btn" id="refresh-sessions-btn" title="刷新会话" aria-label="刷新会话"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+          <button class="icon-btn" id="new-session-btn" title="New session" aria-label="New session" data-i18n-title="newSession" data-i18n-aria="newSession"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          <button class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions" data-i18n-title="refreshSessions" data-i18n-aria="refreshSessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
         </div>
       </div>
       <div class="session-list" id="session-list">
-        <div class="session-loading">正在读取会话…</div>
+        <div class="session-loading" data-i18n="loadingSessions">Loading sessions…</div>
       </div>
     </div>
 
@@ -55,28 +64,28 @@
       <!-- Header -->
       <div class="header">
         <div class="header-left">
-          <button class="sidebar-toggle" id="sidebar-toggle" title="展开或收起会话栏" aria-label="展开或收起会话栏"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+          <button class="sidebar-toggle" id="sidebar-toggle" title="Show or hide sessions" aria-label="Show or hide sessions" data-i18n-title="toggleSidebar" data-i18n-aria="toggleSidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
           <div class="model-dropdown" id="model-dropdown">
-            <button class="model-dropdown-btn" id="model-dropdown-btn" title="切换模型" aria-haspopup="listbox" aria-expanded="false">
-              <span class="model-dropdown-kicker">模型</span>
-              <span class="model-dropdown-label" id="model-dropdown-label">正在读取…</span>
+            <button class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="switchModel">
+              <span class="model-dropdown-kicker" data-i18n="model">Model</span>
+              <span class="model-dropdown-label" id="model-dropdown-label" data-i18n="readingModels">Loading…</span>
               <svg class="model-dropdown-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
           </div>
-          <button class="model-refresh-btn" id="model-refresh-btn" title="重新读取 Pi 的模型配置" aria-label="刷新模型">↻</button>
+          <button class="model-refresh-btn" id="model-refresh-btn" title="Reload Pi model list" aria-label="Refresh models" data-i18n-title="refreshModels" data-i18n-aria="refreshModels">↻</button>
           <div class="thinking-control" id="thinking-control">
-            <button class="thinking-tag" id="thinking-btn" title="设置思考强度" aria-haspopup="listbox" aria-expanded="false">思考：关闭</button>
-            <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="思考强度"></div>
+            <button class="thinking-tag" id="thinking-btn" title="Set thinking level" aria-haspopup="listbox" aria-expanded="false" data-i18n="thinkingOff" data-i18n-title="setThinking">Thinking: Off</button>
+            <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="Thinking level"></div>
           </div>
-          <button class="plan-tag" id="plan-mode-btn" title="切换规划模式（只读探索，等价于 /plan）" aria-pressed="false">规划：关闭</button>
+          <button class="plan-tag" id="plan-mode-btn" title="Toggle plan mode (read-only explore)" aria-pressed="false" data-i18n="planOff" data-i18n-title="planHintOff">Plan: Off</button>
         </div>
         <div class="header-right">
-          <div class="pill session-cost" id="session-cost" title="本次会话费用"></div>
+          <div class="pill session-cost" id="session-cost" title="Cost this session" data-i18n-title="sessionCost"></div>
           <div style="position: relative;">
-            <div class="pill token-usage" id="token-usage" title="查看上下文占用"></div>
+            <div class="pill token-usage" id="token-usage" title="Context usage" data-i18n-title="tokenUsage"></div>
             <div class="context-viz hidden" id="context-viz">
-              <div class="context-viz-title">上下文空间</div>
+              <div class="context-viz-title" data-i18n="contextSpace">Context space</div>
               <div class="context-bar" id="context-bar"></div>
               <div class="context-legend" id="context-legend"></div>
               <div class="context-viz-footer">
@@ -87,12 +96,12 @@
           </div>
           <div class="status">
             <span class="status-indicator" id="status-indicator"></span>
-            <span class="status-text" id="status-text">连接中…</span>
+            <span class="status-text" id="status-text" data-i18n="connecting">Connecting…</span>
           </div>
-          <button class="icon-btn" id="file-sidebar-toggle" title="项目文件" aria-label="打开文件栏">
+          <button class="icon-btn" id="file-sidebar-toggle" title="Project files" aria-label="Open files" data-i18n-title="projectFiles" data-i18n-aria="openFiles">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
           </button>
-          <button class="settings-btn" id="settings-btn" title="设置" aria-label="设置">
+          <button class="settings-btn" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="settings" data-i18n-aria="settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
@@ -105,11 +114,11 @@
       <div class="messages" id="messages">
         <div class="welcome">
           <div class="welcome-icon"><img src="icons/tau-192.png" alt="τ" class="tau-icon-welcome"></div>
-          <p>你好，我是 Pi</p>
-          <p class="hint">直接输入任务，或从左侧继续之前的会话。</p>
+          <p data-i18n="welcomeHi">Hi, I am Pi</p>
+          <p class="hint" data-i18n="welcomeHint">Type a task, or continue a session on the left.</p>
           <div class="shortcuts-hint">
-            <span><kbd>/</kbd> 聚焦输入</span>
-            <span><kbd>Esc</kbd> 停止生成</span>
+            <span><kbd>/</kbd> <span data-i18n="shortcutFocus">Focus input</span></span>
+            <span><kbd>Esc</kbd> <span data-i18n="shortcutStop">Stop generation</span></span>
           </div>
         </div>
       </div>
@@ -132,15 +141,15 @@
         <div class="queued-messages hidden" id="queued-messages"></div>
         <div class="image-previews hidden" id="image-previews"></div>
         <div class="history-resume-bar hidden" id="history-resume-bar">
-          <span class="history-resume-copy"><strong>正在查看历史对话</strong><small>恢复完整上下文后，可以从这里接着聊</small></span>
-          <button type="button" class="history-resume-btn" id="history-resume-btn" aria-label="恢复并继续这段历史对话">继续对话</button>
+          <span class="history-resume-copy"><strong data-i18n="historyViewing">You are viewing history</strong><small data-i18n="historyViewingHint">Restore the full context, then keep chatting from here.</small></span>
+          <button type="button" class="history-resume-btn" id="history-resume-btn" aria-label="Continue this conversation" data-i18n="continueChat" data-i18n-aria="continueChat">Continue</button>
         </div>
         <form id="chat-form">
           <div class="input-left-actions">
-            <button type="button" class="input-icon-btn" id="command-btn" title="快捷操作" aria-label="打开快捷操作" tabindex="-1">
+            <button type="button" class="input-icon-btn" id="command-btn" title="Quick actions" aria-label="Quick actions" tabindex="-1" data-i18n-title="commandPalette" data-i18n-aria="commandPalette">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>
             </button>
-            <button type="button" class="input-icon-btn" id="attach-btn" title="添加图片；引用本地文件请使用右侧文件栏" aria-label="添加图片" tabindex="-1">
+            <button type="button" class="input-icon-btn" id="attach-btn" title="Add image" aria-label="Add image" tabindex="-1" data-i18n-title="attachImage" data-i18n-aria="attachImage">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
             </button>
 
@@ -149,20 +158,21 @@
           <div class="input-bubble">
             <textarea
               id="message-input"
-              placeholder="输入任务…  Enter 发送，Shift + Enter 换行"
+              placeholder="Type a task…  Enter to send, Shift + Enter for a new line"
+              data-i18n-placeholder="inputPlaceholder"
               autocomplete="off"
               rows="2"
 
             ></textarea>
-            <button type="button" class="input-mic-btn" id="mic-btn" title="语音输入" aria-label="语音输入" tabindex="-1">
+            <button type="button" class="input-mic-btn" id="mic-btn" title="Voice input" aria-label="Voice input" tabindex="-1" data-i18n-title="voiceInput" data-i18n-aria="voiceInput">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
             </button>
           </div>
           <div class="input-actions">
-            <button type="submit" id="send-btn" title="发送" aria-label="发送" tabindex="-1">
+            <button type="submit" id="send-btn" title="Send" aria-label="Send" tabindex="-1" data-i18n-title="send" data-i18n-aria="send">
               <span class="send-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
             </button>
-            <button type="button" id="abort-btn" class="hidden" title="停止生成（Esc）" aria-label="停止生成" tabindex="-1"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+            <button type="button" id="abort-btn" class="hidden" title="Stop (Esc)" aria-label="Stop" tabindex="-1" data-i18n-title="stop" data-i18n-aria="stop"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
           </div>
         </form>
       </div>
@@ -171,14 +181,14 @@
     <!-- File Browser (right sidebar) -->
     <div class="file-sidebar collapsed" id="file-sidebar">
       <div class="file-sidebar-header">
-        <span class="file-sidebar-title" id="file-sidebar-title">项目文件</span>
-        <button class="icon-btn" id="file-sidebar-up" title="上一级目录">
+        <span class="file-sidebar-title" id="file-sidebar-title" data-i18n="projectFiles">Project files</span>
+        <button class="icon-btn" id="file-sidebar-up" title="Parent folder" data-i18n-title="parentDir">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-finder" title="在文件管理器中打开">
+        <button class="icon-btn" id="file-sidebar-finder" title="Open in file manager" data-i18n-title="fileManager">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-close" title="关闭" aria-label="关闭文件栏"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        <button class="icon-btn" id="file-sidebar-close" title="Close" aria-label="Close files" data-i18n-title="closeFiles" data-i18n-aria="closeFiles"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
       <div class="file-sidebar-path" id="file-sidebar-path" title=""></div>
       <div class="file-list" id="file-list"></div>
@@ -192,48 +202,56 @@
   <div class="settings-panel hidden" id="settings-panel">
     <div class="settings-header">
       <div>
-        <h3>设置</h3>
-        <p class="settings-subtitle" id="settings-subtitle">主题、思考，以及模型中转站</p>
+        <h3 data-i18n="settings">Settings</h3>
+        <p class="settings-subtitle" id="settings-subtitle" data-i18n="settingsSubtitle">Theme, thinking, and model relays</p>
       </div>
-      <button class="settings-close" id="settings-close" aria-label="关闭设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      <button class="settings-close" id="settings-close" aria-label="Close settings" data-i18n-aria="closeSettings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="settings-tabs" role="tablist" aria-label="设置分类">
-      <button type="button" class="settings-tab active" id="settings-tab-general" data-tab="general" role="tab" aria-selected="true">常用</button>
-      <button type="button" class="settings-tab" id="settings-tab-relay" data-tab="relay" role="tab" aria-selected="false">中转站</button>
+      <button type="button" class="settings-tab active" id="settings-tab-general" data-tab="general" role="tab" aria-selected="true" data-i18n="tabGeneral">General</button>
+      <button type="button" class="settings-tab" id="settings-tab-relay" data-tab="relay" role="tab" aria-selected="false" data-i18n="tabRelay">Relays</button>
     </div>
     <div class="settings-body">
       <div class="settings-pane" id="settings-pane-general">
         <div class="settings-section">
-          <div class="settings-section-title">外观</div>
+          <div class="settings-section-title" data-i18n="appearance">Appearance</div>
           <div class="theme-grid" id="theme-grid"></div>
         </div>
         <div class="settings-section">
-          <div class="settings-section-title">对话</div>
+          <div class="settings-section-title" data-i18n="conversation">Conversation</div>
           <div class="settings-row" id="setting-auto-compact">
-            <span class="settings-label">上下文快满时自动整理</span>
+            <span class="settings-label" data-i18n="autoCompact">Auto-compact when context is almost full</span>
             <button class="settings-toggle" id="toggle-auto-compact"></button>
           </div>
           <div class="settings-row" id="setting-thinking">
-            <span class="settings-label">思考强度</span>
+            <span class="settings-label" data-i18n="thinkingLevel">Thinking level</span>
             <button class="settings-value-btn" id="btn-thinking-level"></button>
           </div>
           <div class="settings-row">
-            <span class="settings-label">显示思考过程</span>
+            <span class="settings-label" data-i18n="showThinking">Show thinking</span>
             <button class="settings-toggle on" id="toggle-show-thinking"></button>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label" data-i18n="language">Language</span>
+            <select id="lang-select" class="settings-input" aria-label="Language">
+              <option value="auto">Auto</option>
+              <option value="en">English</option>
+              <option value="zh">简体中文</option>
+            </select>
           </div>
         </div>
         <div class="settings-section" id="settings-auth-section" style="display:none">
-          <div class="settings-section-title">访问保护</div>
+          <div class="settings-section-title" data-i18n="access">Access</div>
           <div class="settings-row">
-            <span class="settings-label">打开网页需要登录</span>
+            <span class="settings-label" data-i18n="requireLogin">Require login to open the page</span>
             <button class="settings-toggle" id="toggle-auth"></button>
           </div>
         </div>
       </div>
       <div class="settings-pane hidden" id="settings-pane-relay">
-        <p class="settings-lead">把 NewAPI、HFY 这类中转填进来。保存后会自动拉模型，<code>/CN/...</code> 这种名字也能用。</p>
+        <p class="settings-lead" data-i18n="relayLead">Add NewAPI, HFY, or any OpenAI-compatible relay. After save we fetch models. IDs like /CN/... work.</p>
         <div id="relay-list" class="relay-list"></div>
-        <button type="button" class="settings-add-btn" id="relay-add-btn">添加一个中转站</button>
+        <button type="button" class="settings-add-btn" id="relay-add-btn" data-i18n="addRelay">Add a relay</button>
         <div id="relay-editor" class="relay-editor hidden"></div>
       </div>
     </div>
@@ -242,7 +260,7 @@
   <!-- Command Palette -->
   <div class="command-palette-overlay hidden" id="command-palette-overlay"></div>
   <div class="command-palette hidden" id="command-palette">
-    <div class="command-palette-header">快捷操作</div>
+    <div class="command-palette-header" data-i18n="commandPalette">Quick actions</div>
     <div class="command-list" id="command-list"></div>
   </div>
 

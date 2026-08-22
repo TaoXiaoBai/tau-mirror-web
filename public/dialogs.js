@@ -2,6 +2,8 @@
  * Dialogs - Handles extension UI dialogs
  */
 
+import { t } from './i18n.js';
+
 export class DialogHandler {
   constructor(container, wsClient) {
     this.container = container;
@@ -18,10 +20,10 @@ export class DialogHandler {
     const dialog = document.createElement('div');
     dialog.className = 'dialog';
     dialog.innerHTML = `
-      <div class="dialog-title">${this.escapeHtml(title || '请选择')}</div>
+      <div class="dialog-title">${this.escapeHtml(title || t('selectPlease'))}</div>
       <div class="dialog-options" id="dialog-options"></div>
       <div class="dialog-actions">
-        <button id="dialog-cancel">取消</button>
+        <button id="dialog-cancel">${t('cancel')}</button>
       </div>
     `;
 
@@ -52,11 +54,11 @@ export class DialogHandler {
     const dialog = document.createElement('div');
     dialog.className = 'dialog';
     dialog.innerHTML = `
-      <div class="dialog-title">${this.escapeHtml(title || '请确认')}</div>
+      <div class="dialog-title">${this.escapeHtml(title || t('confirmPlease'))}</div>
       ${message ? `<div class="dialog-message">${this.escapeHtml(message)}</div>` : ''}
       <div class="dialog-actions">
-        <button id="dialog-no">取消</button>
-        <button id="dialog-yes">确认</button>
+        <button id="dialog-no">${t('cancel')}</button>
+        <button id="dialog-yes">${t('confirm')}</button>
       </div>
     `;
 
@@ -79,11 +81,11 @@ export class DialogHandler {
     const dialog = document.createElement('div');
     dialog.className = 'dialog';
     dialog.innerHTML = `
-      <div class="dialog-title">${this.escapeHtml(title || '请输入')}</div>
+      <div class="dialog-title">${this.escapeHtml(title || t('inputPlease'))}</div>
       <input type="text" class="dialog-input" id="dialog-input" placeholder="${this.escapeHtml(placeholder || '')}" />
       <div class="dialog-actions">
-        <button id="dialog-cancel">取消</button>
-        <button id="dialog-submit">提交</button>
+        <button id="dialog-cancel">${t('cancel')}</button>
+        <button id="dialog-submit">${t('submit')}</button>
       </div>
     `;
 
@@ -117,11 +119,11 @@ export class DialogHandler {
     const dialog = document.createElement('div');
     dialog.className = 'dialog';
     dialog.innerHTML = `
-      <div class="dialog-title">${this.escapeHtml(title || '编辑内容')}</div>
+      <div class="dialog-title">${this.escapeHtml(title || t('editPlease'))}</div>
       <textarea class="dialog-textarea" id="dialog-textarea">${this.escapeHtml(prefill || '')}</textarea>
       <div class="dialog-actions">
-        <button id="dialog-cancel">取消</button>
-        <button id="dialog-save">保存</button>
+        <button id="dialog-cancel">${t('cancel')}</button>
+        <button id="dialog-save">${t('save')}</button>
       </div>
     `;
 

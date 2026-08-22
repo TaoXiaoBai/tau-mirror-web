@@ -11,6 +11,7 @@ import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
+import { t, applyDomTranslations, getLocalePreference, setLocalePreference, onLocaleChange, thinkingLevels } from './i18n.js';
 
 
 // Initialize components
@@ -48,6 +49,37 @@ const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 const scrollBottomBadge = document.getElementById('scroll-bottom-badge');
 const messagesContainer = document.getElementById('messages');
 const toastRegion = document.getElementById('toast-region');
+applyDomTranslations();
+const langSelect = document.getElementById('lang-select');
+function refreshLangSelectLabels() {
+  if (!langSelect) return;
+  for (const opt of langSelect.options) {
+    if (opt.value === 'auto') opt.textContent = t('langAuto');
+    if (opt.value === 'en') opt.textContent = t('langEn');
+    if (opt.value === 'zh') opt.textContent = t('langZh');
+  }
+}
+refreshLangSelectLabels();
+if (langSelect) {
+  langSelect.value = getLocalePreference();
+  langSelect.addEventListener('change', () => {
+    setLocalePreference(langSelect.value);
+    updateThinkingBtn();
+    updateModelLabel();
+    updatePlanModeBtn();
+    renderRelayList();
+    if (messageInput && !historyResumeBar?.classList.contains('hidden')) {
+      messageInput.placeholder = t('inputHistoryPlaceholder');
+    } else if (messageInput) {
+      messageInput.placeholder = t('inputPlaceholder');
+    }
+  });
+}
+onLocaleChange(() => {
+  applyDomTranslations();
+  refreshLangSelectLabels();
+  if (langSelect) langSelect.value = getLocalePreference();
+});
 const historyResumeBar = document.getElementById('history-resume-bar');
 const historyResumeBtn = document.getElementById('history-resume-btn');
 
@@ -90,27 +122,27 @@ function showToast(message, type = 'info', duration = 2600) {
 }
 
 function humanizeError(error) {
-  const message = String(error?.message || error || '操作没有完成');
-  if (/No API key/i.test(message)) return '这个模型的凭据暂不可用，请检查中转站 API Key';
-  if (/Model not found|没有找到模型/i.test(message)) return message.includes('::') ? message : '没有找到这个模型，请刷新模型列表后重试';
-  if (/Pi is busy/i.test(message)) return 'Pi 正在回答，请等当前回复结束后再操作';
-  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return '网络连接不稳定，请稍后重试';
-  if (/Connection lost|disconnected/i.test(message)) return '与 Pi 的连接已断开，正在等待重连';
-  if (/Session file is invalid|outside the Pi session directory/i.test(message)) return '这段历史对话已不存在或无法恢复';
-  if (/No context available/i.test(message)) return 'Pi 尚未准备好，请稍后重试';
+  const message = String(error?.message || error || t('opFailed'));
+  if (/No API key/i.test(message)) return t('errNoKey');
+  if (/Model not found|没有找到模型/i.test(message)) return message.includes('::') ? message : t('errNoModel');
+  if (/Pi is busy/i.test(message)) return t('errBusy');
+  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return t('errNetwork');
+  if (/Connection lost|disconnected/i.test(message)) return t('errDisconnected');
+  if (/Session file is invalid|outside the Pi session directory/i.test(message)) return t('errBadSession');
+  if (/No context available/i.test(message)) return t('errNoContext');
   return message;
 }
 
 function humanizeModelError(error) {
-  const message = String(error?.message || error || '模型请求失败');
+  const message = String(error?.message || error || t('errModelFail'));
   if (/abort/i.test(message) && /user|signal/i.test(message)) return '';
-  if (/401|unauthorized|invalid api key|incorrect api key|invalid.?key/i.test(message)) return 'API Key 无效或未授权，请在设置里检查中转站密钥';
-  if (/403|forbidden/i.test(message)) return '中转站拒绝访问（403），请检查账号权限';
-  if (/404|model.?not.?found|does not exist|unknown model/i.test(message)) return `模型不可用：${message}`;
-  if (/429|rate limit|too many requests/i.test(message)) return '请求过于频繁，请稍后再试';
-  if (/402|insufficient|quota|balance|余额不足/i.test(message)) return '中转站余额不足或配额已用完';
-  if (/context.?length|too many tokens|maximum context/i.test(message)) return '上下文超长，请整理会话后再试';
-  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return '无法连接到中转站，请检查地址或网络';
+  if (/401|unauthorized|invalid api key|incorrect api key|invalid.?key/i.test(message)) return t('errUnauthorized');
+  if (/403|forbidden/i.test(message)) return t('errForbidden');
+  if (/404|model.?not.?found|does not exist|unknown model/i.test(message)) return t('errModelUnavailable', { msg: message });
+  if (/429|rate limit|too many requests/i.test(message)) return t('errRateLimit');
+  if (/402|insufficient|quota|balance|余额不足/i.test(message)) return t('errQuota');
+  if (/context.?length|too many tokens|maximum context/i.test(message)) return t('errContext');
+  if (/Failed to fetch|NetworkError|ECONNRESET|ETIMEDOUT/i.test(message)) return t('errRelayDown');
   return message;
 }
 
@@ -1006,13 +1038,7 @@ let modelMetadataMode = 'pi-only';
 let relayProviders = [];
 let currentThinkingLevel = 'off';
 
-const THINKING_LEVELS = [
-  { id: 'off', label: '关闭', hint: '直接回答，速度优先' },
-  { id: 'minimal', label: '极简', hint: '少量推理' },
-  { id: 'low', label: '轻度', hint: '适合日常任务' },
-  { id: 'medium', label: '标准', hint: '速度与深度平衡' },
-  { id: 'high', label: '深入', hint: '复杂任务优先' },
-];
+const THINKING_LEVELS = thinkingLevels;
 
 const MODEL_LABELS = {
   'OAI/gpt-5.6-sol-thinking-none': 'GPT-5.6 Sol · 直答',
@@ -1096,11 +1122,11 @@ function applyContextWindow(model) {
 function updateThinkingBtn() {
   const model = getCurrentModel();
   const unsupported = model?.reasoning === false;
-  const level = THINKING_LEVELS.find(item => item.id === currentThinkingLevel) || THINKING_LEVELS[0];
-  thinkingBtn.textContent = unsupported ? '思考：不适用' : `思考：${level.label}`;
+  const level = THINKING_LEVELS().find(item => item.id === currentThinkingLevel) || THINKING_LEVELS()[0];
+  thinkingBtn.textContent = unsupported ? t('thinkNA') : t('thinkLabel', { label: level.label });
   thinkingBtn.classList.toggle('off', currentThinkingLevel === 'off' || unsupported);
   thinkingBtn.classList.toggle('unavailable', unsupported);
-  thinkingBtn.title = unsupported ? '当前模型不使用思考强度' : `思考强度：${level.label}`;
+  thinkingBtn.title = unsupported ? t('thinkTitleNA') : t('thinkTitle', { label: level.label });
   thinkingBtn.setAttribute('aria-disabled', String(unsupported));
 }
 
@@ -1187,14 +1213,14 @@ function openModelDropdown() {
 
   const header = document.createElement('div');
   header.className = 'model-dropdown-head';
-  header.innerHTML = `<strong>选择模型</strong><span>${availableModels.length} 个可用</span>`;
+  header.innerHTML = `<strong>${t('chooseModel')}</strong><span>${t('modelsAvailable', { n: availableModels.length })}</span>`;
   modelDropdownMenu.appendChild(header);
 
   const search = document.createElement('input');
   search.className = 'model-dropdown-search';
-  search.placeholder = '搜索模型或供应商';
+  search.placeholder = t('searchModels');
   search.type = 'search';
-  search.setAttribute('aria-label', '搜索模型');
+  search.setAttribute('aria-label', t('searchModels'));
   modelDropdownMenu.appendChild(search);
 
   const itemsContainer = document.createElement('div');
@@ -1207,7 +1233,7 @@ function openModelDropdown() {
   const manageBtn = document.createElement('button');
   manageBtn.type = 'button';
   manageBtn.className = 'model-dropdown-manage';
-  manageBtn.textContent = '管理中转站';
+  manageBtn.textContent = t('manageRelays');
   manageBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     closeModelDropdown();
@@ -1236,7 +1262,7 @@ function openModelDropdown() {
     if (groups.size === 0) {
       const empty = document.createElement('div');
       empty.className = 'model-dropdown-empty';
-      empty.textContent = availableModels.length ? '没有匹配的模型' : '还没有模型，请点击刷新按钮';
+      empty.textContent = availableModels.length ? t('noMatchModels') : t('noModelsYet');
       itemsContainer.appendChild(empty);
       return;
     }
@@ -1353,7 +1379,7 @@ async function refreshModels() {
   if (!modelRefreshBtn || modelRefreshBtn.disabled) return;
   modelRefreshBtn.disabled = true;
   modelRefreshBtn.classList.add('spinning');
-  showToast('正在从中转站同步模型列表…', 'loading', 1500);
+  showToast(t('syncingRelays'), 'loading', 1500);
   await fetchModelInfo({ showStatus: true, refreshProviderMetadata: true });
   modelRefreshBtn.disabled = false;
   modelRefreshBtn.classList.remove('spinning');
@@ -1365,12 +1391,10 @@ let planModeActive = false;
 const planModeBtn = document.getElementById('plan-mode-btn');
 function updatePlanModeBtn() {
   if (!planModeBtn) return;
-  planModeBtn.textContent = planModeActive ? '规划：开启' : '规划：关闭';
+  planModeBtn.textContent = planModeActive ? t('planOn') : t('planOff');
   planModeBtn.classList.toggle('active', planModeActive);
   planModeBtn.setAttribute('aria-pressed', String(planModeActive));
-  planModeBtn.title = planModeActive
-    ? '规划模式已开启（只读探索，再次点击关闭）'
-    : '切换规划模式（只读探索）';
+  planModeBtn.title = planModeActive ? t('planHintOn') : t('planHintOff');
 }
 planModeBtn?.addEventListener('click', event => {
   event.stopPropagation();
@@ -1408,8 +1432,8 @@ function openThinkingMenu() {
     return;
   }
   closeModelDropdown();
-  thinkingMenu.innerHTML = '<div class="thinking-menu-title">思考强度</div>';
-  THINKING_LEVELS.forEach(level => {
+  thinkingMenu.innerHTML = `<div class="thinking-menu-title">${t('thinkMenuTitle')}</div>`;
+  THINKING_LEVELS().forEach(level => {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = `thinking-menu-item${level.id === currentThinkingLevel ? ' active' : ''}`;
@@ -2095,25 +2119,25 @@ function updateConnectionStatus(status) {
   statusIndicator.className = `status-indicator ${status}`;
 
   if (status === 'connected') {
-    statusText.textContent = tailscaleUrl ? '已连接 · TS' : '已连接';
-    statusText.title = tailscaleUrl || '已连接到 Pi';
-    if (previous === 'disconnected') showToast('已重新连接 Pi', 'success', 2200);
+    statusText.textContent = tailscaleUrl ? `${t('connected')} · TS` : t('connected');
+    statusText.title = tailscaleUrl || t('connectedPi');
+    if (previous === 'disconnected') showToast(t('reconnected'), 'success', 2200);
     if (!tailscaleUrl) {
       // Delay health check to avoid competing with mirror_sync during reconnect
       setTimeout(() => {
         fetch('/api/health').then(r => r.json()).then(data => {
           if (data.tailscaleUrl) {
             tailscaleUrl = data.tailscaleUrl;
-            statusText.textContent = '已连接 · TS';
+            statusText.textContent = `${t('connected')} · TS`;
             statusText.title = tailscaleUrl;
           }
         }).catch(() => {});
       }, 3000);
     }
   } else if (status === 'disconnected') {
-    statusText.textContent = '连接已断开';
-    statusText.title = '正在等待自动重连';
-    if (previous === 'connected') showToast('连接中断，正在自动重连…', 'warning', 3200);
+    statusText.textContent = t('disconnected');
+    statusText.title = t('waitingReconnect');
+    if (previous === 'connected') showToast(t('reconnecting'), 'warning', 3200);
   }
 }
 
@@ -2123,12 +2147,12 @@ function updateUI() {
   if (isStreaming) {
     statusIndicator.classList.add('streaming');
     statusIndicator.classList.remove('connected');
-    statusText.textContent = 'Pi 正在处理';
-    statusText.title = '可按 Esc 停止生成';
+    statusText.textContent = t('piWorking');
+    statusText.title = t('escStop');
   } else {
     statusIndicator.classList.remove('streaming');
     statusIndicator.classList.toggle('connected', connectionState === 'connected');
-    statusText.textContent = connectionState === 'connected' ? (tailscaleUrl ? '已连接 · TS' : '已连接') : '连接已断开';
+    statusText.textContent = connectionState === 'connected' ? (tailscaleUrl ? `${t('connected')} · TS` : t('connected')) : t('disconnected');
   }
 
   messageInput.disabled = false;
@@ -2201,7 +2225,7 @@ function switchSettingsTab(tab) {
   document.getElementById('settings-pane-general')?.classList.toggle('hidden', next !== 'general');
   document.getElementById('settings-pane-relay')?.classList.toggle('hidden', next !== 'relay');
   const subtitle = document.getElementById('settings-subtitle');
-  if (subtitle) subtitle.textContent = next === 'relay' ? '添加地址和密钥，模型会自己出现' : '主题、思考，以及模型中转站';
+  if (subtitle) subtitle.textContent = next === 'relay' ? t('settingsSubtitleRelay') : t('settingsSubtitle');
 }
 
 async function openSettings(tab = 'general') {
@@ -2224,7 +2248,7 @@ async function openSettings(tab = 'general') {
       toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? ' on' : ''}`;
       // Thinking level
       currentThinkingLevel = s.thinkingLevel || 'off';
-      const level = THINKING_LEVELS.find(item => item.id === currentThinkingLevel) || THINKING_LEVELS[0];
+      const level = THINKING_LEVELS().find(item => item.id === currentThinkingLevel) || THINKING_LEVELS()[0];
       btnThinkingLevel.textContent = level.label;
       updateThinkingBtn();
     }
@@ -2276,7 +2300,7 @@ btnThinkingLevel.addEventListener('click', async () => {
   const data = await rpcCommand({ type: 'cycle_thinking_level' }, '正在调整思考强度…');
   if (data?.success && data.data?.level) {
     currentThinkingLevel = data.data.level;
-    const level = THINKING_LEVELS.find(item => item.id === currentThinkingLevel) || THINKING_LEVELS[0];
+    const level = THINKING_LEVELS().find(item => item.id === currentThinkingLevel) || THINKING_LEVELS()[0];
     btnThinkingLevel.textContent = level.label;
     updateThinkingBtn();
     showToast(`思考强度：${level.label}`, 'success', 2000);
@@ -2328,7 +2352,7 @@ function renderRelayList() {
   if (!relayProviders.length) {
     const empty = document.createElement('div');
     empty.className = 'relay-empty';
-    empty.innerHTML = `<strong>还没有中转站</strong><span>填入地址和密钥后，模型会出现在左上角的列表里。</span>`;
+    empty.innerHTML = `<strong>${t('noRelays')}</strong><span>${t('noRelaysHint')}</span>`;
     relayListEl.appendChild(empty);
     return;
   }

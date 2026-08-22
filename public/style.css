@@ -1572,6 +1572,11 @@ body {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
+#lang-select {
+  width: auto;
+  min-width: 132px;
+}
+
 .settings-hint,
 .settings-lead {
   margin: 0 0 14px;

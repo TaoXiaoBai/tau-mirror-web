@@ -3,6 +3,7 @@
  */
 
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
+import { t } from './i18n.js';
 
 export class MessageRenderer {
   constructor(container) {
@@ -48,11 +49,11 @@ export class MessageRenderer {
     this.container.innerHTML = `
       <div class="welcome">
         <div class="welcome-icon"><img src="icons/tau-192.png" alt="Tau" class="tau-icon-welcome"></div>
-        <p>你好，我是 Pi</p>
-        <p class="hint">直接输入任务，或从左侧继续之前的会话。</p>
+        <p>${t('welcomeHi')}</p>
+        <p class="hint">${t('welcomeHint')}</p>
         <div class="shortcuts-hint">
-          <span><kbd>/</kbd> 聚焦输入</span>
-          <span><kbd>Esc</kbd> 停止生成</span>
+          <span><kbd>/</kbd> ${t('shortcutFocus')}</span>
+          <span><kbd>Esc</kbd> ${t('shortcutStop')}</span>
         </div>
       </div>
     `;
@@ -319,13 +320,13 @@ export class MessageRenderer {
     div.setAttribute('role', 'alert');
     const title = document.createElement('div');
     title.className = 'error-message-title';
-    title.textContent = '刚才没回答成功';
+    title.textContent = t('errTitle');
     const body = document.createElement('div');
     body.className = 'error-message-body';
     body.textContent = errorMessage;
     const hint = document.createElement('div');
     hint.className = 'error-message-hint';
-    hint.textContent = '可以打开右上角设置 → 中转站，检查地址和密钥。';
+    hint.textContent = t('errHint');
     div.append(title, body, hint);
     this.container.appendChild(div);
     this.scrollToBottom();
