@@ -1098,6 +1098,7 @@ let availableModels = [];
 let modelMetadataMode = 'pi-only';
 let relayProviders = [];
 let relayBackendReady = false;
+let modelMenuNotice = null;
 let currentThinkingLevel = 'off';
 const BUILTIN_MODEL_PROVIDERS = new Set([
   'openai', 'anthropic', 'google', 'google-gemini', 'google-generative-ai',
@@ -1351,6 +1352,13 @@ function openModelDropdown() {
   header.className = 'model-dropdown-head';
   header.innerHTML = `<strong>${t('chooseModel')}</strong><span>${t('modelsAvailable', { n: availableModels.length })}</span>`;
   modelDropdownMenu.appendChild(header);
+  if (modelMenuNotice?.text) {
+    const notice = document.createElement('div');
+    notice.className = `model-menu-notice ${modelMenuNotice.kind || 'success'}`;
+    notice.textContent = modelMenuNotice.text;
+    modelDropdownMenu.appendChild(notice);
+    modelMenuNotice = null;
+  }
 
   const search = document.createElement('input');
   search.className = 'model-dropdown-search';
@@ -2933,19 +2941,59 @@ async function saveRelayFromEditor() {
   openModelDropdown();
 }
 
+function dropProviderLocally(id) {
+  const before = availableModels.length;
+  relayProviders = relayProviders.filter((item) => item.id !== id);
+  availableModels = availableModels.filter((model) => model.provider !== id);
+  if (currentModelProvider === id) {
+    currentModelId = '';
+    currentModelProvider = '';
+    updateModelLabel();
+  }
+  return before - availableModels.length;
+}
+
 async function deleteRelayFromEditor() {
   const form = readRelayEditor();
   if (!form.id) return;
-  if (!confirm(t('confirmDelete', { name: form.name || form.id }))) return;
+  const name = form.name || form.id;
+  if (!confirm(t('confirmDelete', { name }))) return;
+  const deleteBtn = document.getElementById('relay-delete-btn');
+  const saveBtn = document.getElementById('relay-save-btn');
+  const testBtn = document.getElementById('relay-test-btn');
+  if (deleteBtn) deleteBtn.disabled = true;
+  if (saveBtn) saveBtn.disabled = true;
+  if (testBtn) testBtn.disabled = true;
+  setRelayStatus(t('deletingRelay', { name }), 'info');
   const data = await rpcCommand({ type: 'delete_provider', id: form.id });
   if (!data?.success) {
+    if (deleteBtn) deleteBtn.disabled = false;
+    if (saveBtn) saveBtn.disabled = false;
+    if (testBtn) testBtn.disabled = false;
     setRelayStatus(humanizeError(data?.error) || t('deleteFail'), 'error');
     return;
   }
-  showToast(t('deleted', { id: form.id }), 'success', 2600);
+  const removed = dropProviderLocally(form.id);
+  const message = t('deletedBanner', { name, n: removed });
+  modelMenuNotice = { kind: 'success', text: message };
+  showToast(message, 'success', 3200);
+  if (modelDropdownMenu) {
+    modelDropdownMenu.innerHTML = `
+      <div class="relay-editor in-model-menu">
+        <div class="model-menu-notice success">${escapeHtml(message)}</div>
+        <div class="relay-actions">
+          <button type="button" class="relay-btn primary" id="relay-deleted-back">${escapeHtml(t('backToRelays'))}</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('relay-deleted-back')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openModelDropdown();
+    });
+  }
   await loadRelayProviders();
-  await fetchModelInfo({ refreshProviderMetadata: true });
-  openModelDropdown();
+  await fetchModelInfo({ showStatus: false, refreshProviderMetadata: true });
+  dropProviderLocally(form.id);
 }
 
 // Restore saved theme

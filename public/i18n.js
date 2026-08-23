@@ -262,7 +262,10 @@ const en = {
   savedOkDetail: 'Done. {n} models are in the top-left list.',
   confirmDelete: 'Delete “{name}”? Its models will leave the list.',
   deleteFail: 'Could not delete',
-  deleted: 'Deleted provider {id}',
+  deletingRelay: 'Deleting {name}…',
+  deleted: 'Deleted {name}. Its models are gone from the list.',
+  deletedBanner: 'Deleted {name}. {n} models left the list.',
+  backToRelays: 'Back to providers',
 
   cache: 'Cache',
   messages: 'Messages',
@@ -559,7 +562,10 @@ const zh = {
   savedOkDetail: '好了，{n} 个模型已经出现在左上角列表里。',
   confirmDelete: '要删除「{name}」吗？模型列表里对应的项也会消失。',
   deleteFail: '删除失败',
-  deleted: '已删除供应商 {id}',
+  deletingRelay: '正在删除 {name}…',
+  deleted: '已删除 {name}，它的模型已从列表里拿掉。',
+  deletedBanner: '已删除 {name}，{n} 个模型已从列表里拿掉。',
+  backToRelays: '返回供应商列表',
 
   cache: '缓存',
   messages: '消息',

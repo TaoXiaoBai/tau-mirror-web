@@ -1776,15 +1776,48 @@ body {
 }
 
 .relay-status {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 650;
   line-height: 1.45;
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-glass);
 }
 
-.relay-status.error { color: var(--error); }
-.relay-status.success { color: var(--success); }
+.relay-status.error {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+}
+.relay-status.success {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border));
+}
+
+.model-menu-notice {
+  margin: 0 0 8px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.model-menu-notice.success {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, var(--bg-solid));
+  border: 1px solid color-mix(in srgb, var(--success) 42%, var(--border));
+}
+
+.model-menu-notice.error {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 16%, var(--bg-solid));
+  border: 1px solid color-mix(in srgb, var(--error) 42%, var(--border));
+}
 
 .relay-item-samples {
   color: var(--text-dim);
