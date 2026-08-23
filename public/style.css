@@ -767,6 +767,7 @@ body {
   display: none;
   width: 22px;
   height: 22px;
+  margin-left: auto;
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -777,6 +778,7 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  touch-action: manipulation;
   transition: all var(--duration) var(--ease);
 }
 
@@ -792,7 +794,6 @@ body {
   justify-content: center;
   width: 22px;
   height: 22px;
-  margin-left: auto;
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -3765,6 +3766,7 @@ body.hide-thinking .thinking-block { display: none !important; }
     background: none;
   }
 
+  .session-rename-btn,
   .session-delete-btn {
     display: flex;
   }

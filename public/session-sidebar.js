@@ -9,6 +9,7 @@ export class SessionSidebar {
     this.container = container;
     this.onSessionSelect = onSessionSelect;
     this.onSessionDeleted = options.onSessionDeleted || null;
+    this.onSessionRenamed = options.onSessionRenamed || null;
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -235,7 +236,7 @@ export class SessionSidebar {
 
     const items = [
       { icon: isFav ? '★' : '☆', label: isFav ? t('unfavourite') : t('favourite'), action: () => this.toggleFavourite(session.filePath) },
-      { icon: '✎', label: t('renameSession'), action: () => this.startRename(itemEl) },
+      { icon: '✎', label: t('renameSession'), action: () => this.startRename(session, itemEl) },
       { icon: '📋', label: t('exportHtml'), action: () => this.exportSession(session) },
       { icon: '🗑', label: t('deleteSession'), action: () => this.deleteSession(session, itemEl), danger: true },
     ];
@@ -272,41 +273,67 @@ export class SessionSidebar {
     }
   }
 
-  startRename(itemEl) {
+  startRename(session, itemEl) {
     const titleEl = itemEl.querySelector('.session-title');
-    if (!titleEl) return;
+    if (!titleEl || titleEl.tagName === 'INPUT') return;
     const currentName = titleEl.textContent;
+    let done = false;
 
     const input = document.createElement('input');
     input.className = 'session-rename-input';
     input.value = currentName;
+    input.setAttribute('aria-label', t('renameSession'));
     titleEl.replaceWith(input);
     input.focus();
     input.select();
 
-    const commit = async () => {
-      const newName = input.value.trim();
-      if (newName && newName !== currentName) {
-        try {
-          await fetch('/api/rpc', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'set_session_name', name: newName }),
-          });
-        } catch { /* silent */ }
-      }
+    const restoreTitle = (text) => {
       const newTitle = document.createElement('div');
       newTitle.className = 'session-title';
-      newTitle.title = newName || currentName;
-      newTitle.textContent = newName || currentName;
-      input.replaceWith(newTitle);
+      newTitle.title = text;
+      newTitle.textContent = text;
+      if (input.isConnected) input.replaceWith(newTitle);
+      return newTitle;
     };
 
-    input.addEventListener('blur', commit);
+    const commit = async (save) => {
+      if (done) return;
+      done = true;
+      const newName = input.value.trim();
+      if (!save || !newName || newName === currentName) {
+        restoreTitle(currentName);
+        return;
+      }
+      try {
+        const res = await fetch('/api/sessions/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath: session.filePath, name: newName }),
+          signal: AbortSignal.timeout(4000),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.success) {
+          restoreTitle(currentName);
+          const msg = data.error === 'invalid' ? t('renameSessionGone') : t('renameSessionFail');
+          this.onSessionRenamed?.(false, session, msg);
+          return;
+        }
+        const saved = data.name || newName;
+        session.name = saved;
+        restoreTitle(saved);
+        this.onSessionRenamed?.(true, session, t('renameSessionOk', { name: saved }));
+      } catch {
+        restoreTitle(currentName);
+        this.onSessionRenamed?.(false, session, t('renameSessionFail'));
+      }
+    };
+
+    input.addEventListener('blur', () => commit(true));
     input.addEventListener('keydown', (ke) => {
       if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
-      if (ke.key === 'Escape') { input.value = currentName; input.blur(); }
+      if (ke.key === 'Escape') { ke.preventDefault(); commit(false); }
     });
+    input.addEventListener('click', (e) => e.stopPropagation());
   }
 
   sessionLabel(session) {
@@ -401,6 +428,9 @@ export class SessionSidebar {
         ${favIcon}
         <div class="session-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</div>
         ${tmuxTag}
+        <button type="button" class="session-rename-btn" title="${this.escapeHtml(t('renameSession'))}" aria-label="${this.escapeHtml(t('renameSession'))}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
         <button type="button" class="session-delete-btn" title="${this.escapeHtml(t('deleteSessionTitle'))}" aria-label="${this.escapeHtml(t('deleteSessionTitle'))}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button>
@@ -410,6 +440,11 @@ export class SessionSidebar {
 
     item.addEventListener('click', () => this.onSessionSelect(session, project));
     item.addEventListener('contextmenu', (e) => this.showContextMenu(e, session, project, item));
+    item.querySelector('.session-rename-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.startRename(session, item);
+    });
     item.querySelector('.session-delete-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();

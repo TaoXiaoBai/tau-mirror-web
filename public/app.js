@@ -26,7 +26,7 @@ const dialogHandler = new DialogHandler(document.getElementById('dialog-containe
 const sidebar = new SessionSidebar(
   document.getElementById('session-list'),
   handleSessionSelect,
-  { onSessionDeleted: handleSessionDeleted }
+  { onSessionDeleted: handleSessionDeleted, onSessionRenamed: handleSessionRenamed }
 );
 
 // UI elements
@@ -1920,6 +1920,10 @@ async function handleSessionSelect(session, project) {
     sidebarEl.classList.add('collapsed');
     sidebarOverlay.classList.remove('visible');
   }
+}
+
+function handleSessionRenamed(ok, _session, message) {
+  if (message) showToast(message, ok ? 'success' : 'error', ok ? 2400 : 4200);
 }
 
 function handleSessionDeleted(ok, session, message) {

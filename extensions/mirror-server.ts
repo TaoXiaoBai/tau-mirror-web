@@ -16,6 +16,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { randomBytes } from "node:crypto";
 import QRCode from "qrcode";
 
 // Load tau settings from ~/.pi/agent/settings.json (falls back to env vars)
@@ -405,6 +406,69 @@ export default function (pi: ExtensionAPI) {
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
     if (path.extname(resolved).toLowerCase() !== ".jsonl" || !fs.existsSync(resolved)) return null;
     return resolved;
+  }
+
+  function sanitizeSessionName(name: string): string {
+    return String(name || "").replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+  }
+
+  function readSessionFileTail(filePath: string, maxBytes = 65536): string {
+    const stat = fs.statSync(filePath);
+    const size = Math.min(stat.size, maxBytes);
+    if (size <= 0) return "";
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buf = Buffer.alloc(size);
+      fs.readSync(fd, buf, 0, size, Math.max(0, stat.size - size));
+      return buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  function parseJsonlEntriesFromTail(filePath: string): any[] {
+    const text = readSessionFileTail(filePath);
+    const lines = text.split(/\r?\n/);
+    const entries: any[] = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { entries.push(JSON.parse(line)); } catch {}
+    }
+    return entries;
+  }
+
+  function readLatestSessionName(filePath: string): string | null {
+    const entries = parseJsonlEntriesFromTail(filePath);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i]?.type === "session_info") {
+        return typeof entries[i].name === "string" ? String(entries[i].name).trim() : "";
+      }
+    }
+    return null;
+  }
+
+  function appendSessionInfoToFile(filePath: string, name: string): string {
+    const entries = parseJsonlEntriesFromTail(filePath);
+    const last = entries[entries.length - 1];
+    const entry = {
+      type: "session_info",
+      id: randomBytes(4).toString("hex"),
+      parentId: last?.id || null,
+      timestamp: new Date().toISOString(),
+      name,
+    };
+    fs.appendFileSync(filePath, JSON.stringify(entry) + "\n", "utf8");
+    return name;
+  }
+
+  function renameSessionFile(filePath: string, rawName: string): { name: string; live: boolean } {
+    const name = sanitizeSessionName(rawName);
+    if (!name) throw new Error("empty");
+    const currentFile = latestCtx?.sessionManager.getSessionFile();
+    const live = !!(currentFile && path.resolve(currentFile) === filePath);
+    if (live) pi.setSessionName(name);
+    else appendSessionInfoToFile(filePath, name);
+    return { name, live };
   }
 
   // Session replacement is available only on a command context. The browser
@@ -1637,13 +1701,20 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "set_session_name": {
-          const name = command.name?.trim();
+          const name = sanitizeSessionName(command.name);
           if (!name) {
-            sendTo(ws, error("set_session_name", "Name cannot be empty"));
+            sendTo(ws, error("set_session_name", "empty"));
             break;
           }
-          pi.setSessionName(name);
-          sendTo(ws, success("set_session_name"));
+          const sessionPath = command.sessionFile ? resolveAllowedSessionPath(String(command.sessionFile)) : null;
+          if (command.sessionFile && !sessionPath) {
+            sendTo(ws, error("set_session_name", "invalid"));
+            break;
+          }
+          const result = sessionPath
+            ? renameSessionFile(sessionPath, name)
+            : (pi.setSessionName(name), { name, live: true });
+          sendTo(ws, success("set_session_name", result));
           break;
         }
 
@@ -2268,6 +2339,30 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
+    if (urlPath === "/api/sessions/rename" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { filePath, name } = JSON.parse(body);
+          const sessionPath = resolveAllowedSessionPath(String(filePath || ""));
+          if (!sessionPath) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid" }));
+            return;
+          }
+          const result = renameSessionFile(sessionPath, String(name || ""));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, ...result }));
+        } catch (err: any) {
+          const code = err?.message === "empty" ? 400 : 500;
+          res.writeHead(code, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err?.message || "rename_failed" }));
+        }
+      });
+      return;
+    }
+
     // Memoryd check
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));
@@ -2506,6 +2601,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     rl.close();
     stream.destroy();
+
+    const latestName = readLatestSessionName(filePath);
+    if (latestName !== null) sessionName = latestName || null;
 
     if (!header?.id) return null;
     if (userMessageCount <= 1 && lineCount <= 8) return null; // pipe mode
