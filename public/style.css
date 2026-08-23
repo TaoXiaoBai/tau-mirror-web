@@ -1436,6 +1436,7 @@ body {
   z-index: 1000;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s var(--ease) both;
 }
 
 .settings-overlay.hidden { display: none !important; }
@@ -1463,12 +1464,28 @@ body {
   max-height: 100vh;
   overflow: hidden;
   box-shadow: -16px 0 40px rgba(0, 0, 0, 0.18);
-  animation: sheetIn 0.28s var(--ease);
+  animation: drawerIn 0.28s var(--ease) both;
 }
 
-@keyframes sheetIn {
-  from { opacity: 0; transform: translateX(24px); }
-  to { opacity: 1; transform: translateX(0); }
+@keyframes drawerIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes centerIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 10px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes dialogIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .settings-header {
@@ -3143,7 +3160,7 @@ body.hide-thinking .thinking-block { display: none !important; }
   max-width: 420px;
   width: 90%;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
-  animation: sheetIn 0.3s var(--ease);
+  animation: dialogIn 0.22s var(--ease) both;
 }
 
 .dialog-title {
@@ -3240,6 +3257,7 @@ body.hide-thinking .thinking-block { display: none !important; }
   z-index: 1000;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  animation: fadeIn 0.18s var(--ease) both;
 }
 
 .command-palette-overlay.hidden,
@@ -3261,7 +3279,7 @@ body.hide-thinking .thinking-block { display: none !important; }
   max-height: 400px;
   overflow: hidden;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
-  animation: sheetIn 0.2s var(--ease);
+  animation: centerIn 0.2s var(--ease) both;
   z-index: 1001;
   display: flex;
   flex-direction: column;
