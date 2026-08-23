@@ -1207,26 +1207,27 @@ export default function (pi: ExtensionAPI) {
     return title;
   }
 
-  // ═══════════════════════════════════════
-  // Build state snapshot for new connections
-  // ═══════════════════════════════════════
-  async function buildStateSnapshot(ctx: ExtensionContext) {
-    // Get session entries for message history
-    let entries = ctx.sessionManager.getEntries();
+  function entrySignature(entry: any): string {
+    if (!entry) return "";
+    const msg = entry.message || {};
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    const last = content[content.length - 1];
+    const text = typeof last?.text === "string" ? last.text : "";
+    return [entry.type || "", msg.role || "", content.length, text.length, text.slice(-24)].join(":");
+  }
 
+  function prepareSyncEntries(ctx: ExtensionContext) {
     // For very long sessions, only send the tail to avoid transmitting
     // tens of MB over WebSocket, which freezes both the server (JSON.stringify)
-    // and the browser (JSON.parse + DOM rendering).  Keep enough context
-    // so the user can see recent conversation.
+    // and the browser (JSON.parse + DOM rendering).
+    let entries = ctx.sessionManager.getEntries();
     const MAX_SYNC_ENTRIES = 200;
     if (entries.length > MAX_SYNC_ENTRIES) {
       entries = entries.slice(-MAX_SYNC_ENTRIES);
     }
 
-    // Trim oversized entries to prevent browser freeze on parse + render.
-    // Tool results with huge output (>30KB text) are truncated with a notice.
     const MAX_ENTRY_TEXT_LEN = 30000;
-    entries = entries.map((entry: any) => {
+    return entries.map((entry: any) => {
       if (entry.type !== "message" || !entry.message) return entry;
       const msg = entry.message;
       if (!Array.isArray(msg.content)) return entry;
@@ -1243,14 +1244,17 @@ export default function (pi: ExtensionAPI) {
       if (!modified) return entry;
       return { ...entry, message: { ...msg, content: trimmedContent } };
     });
+  }
 
-    // Get model info
+  // ═══════════════════════════════════════
+  // Build state snapshot for new connections
+  // ═══════════════════════════════════════
+  async function buildStateSnapshot(ctx: ExtensionContext) {
+    const entries = prepareSyncEntries(ctx);
     const model = ctx.model;
     const thinkingLevel = pi.getThinkingLevel();
     const sessionName = pi.getSessionName();
     const sessionFile = ctx.sessionManager.getSessionFile();
-
-    // Context usage
     const contextUsage = ctx.getContextUsage();
 
     return {
@@ -1262,6 +1266,8 @@ export default function (pi: ExtensionAPI) {
       sessionFile,
       isStreaming: !ctx.isIdle(),
       contextUsage,
+      entryCount: entries.length,
+      entrySig: entrySignature(entries[entries.length - 1]),
     };
   }
 
@@ -1284,6 +1290,46 @@ export default function (pi: ExtensionAPI) {
 
     try {
       switch (command.type) {
+        case "ping": {
+          sendTo(ws, { type: "pong", t: command.t || Date.now() });
+          break;
+        }
+
+        case "mirror_hello": {
+          (ws as any).helloHandled = true;
+          if ((ws as any).helloWait) {
+            clearTimeout((ws as any).helloWait);
+            (ws as any).helloWait = null;
+          }
+          if (!ctx) {
+            sendTo(ws, { type: "mirror_sync", entries: [], model: null, entryCount: 0, entrySig: "" });
+            break;
+          }
+          const entries = prepareSyncEntries(ctx);
+          const sessionFile = ctx.sessionManager.getSessionFile();
+          const entryCount = entries.length;
+          const entrySig = entrySignature(entries[entries.length - 1]);
+          const same =
+            !!command.sessionFile &&
+            command.sessionFile === sessionFile &&
+            Number(command.entryCount) === entryCount &&
+            command.entrySig === entrySig;
+          if (same) {
+            sendTo(ws, {
+              type: "mirror_hello_ok",
+              sessionFile,
+              model: ctx.model,
+              thinkingLevel: pi.getThinkingLevel(),
+              isStreaming: !ctx.isIdle(),
+              entryCount,
+              entrySig,
+            });
+          } else {
+            sendTo(ws, await buildStateSnapshot(ctx));
+          }
+          break;
+        }
+
         // ─── Prompting ───
         case "prompt": {
           if (ctx && !ctx.isIdle()) {
@@ -2673,12 +2719,16 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       // Send initial state
       sendTo(ws, { type: "state", isStreaming: false, mode: "mirror" });
 
-      // Immediately send state snapshot
-      if (latestCtx) {
+      // Give a returning tab a moment to send mirror_hello. If the session
+      // tail is unchanged we skip shipping the full history again.
+      (ws as any).helloWait = setTimeout(() => {
+        (ws as any).helloWait = null;
+        if ((ws as any).helloHandled || !latestCtx) return;
         buildStateSnapshot(latestCtx).then((snapshot) => {
+          if ((ws as any).helloHandled) return;
           sendTo(ws, snapshot);
         });
-      }
+      }, 80);
 
       ws.on("message", (data) => {
         try {
@@ -2691,6 +2741,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
       ws.on("close", () => {
         console.log("[Mirror] Browser client disconnected");
+        if ((ws as any).helloWait) {
+          clearTimeout((ws as any).helloWait);
+          (ws as any).helloWait = null;
+        }
         clients.delete(ws);
       });
 

@@ -13,11 +13,32 @@ export class WebSocketClient extends EventTarget {
     this.maxReconnectDelay = 30000;
     this.isIntentionallyClosed = false;
     this.reconnectTimer = null;
+    this.heartbeatTimer = null;
     this.connectionState = 'idle';
+    this.socketId = 0;
+    this.lastPongAt = 0;
+    this.resumeHint = null;
+    this.probeInFlight = null;
+    this.lastForceAt = 0;
+  }
+
+  _abandonSocket() {
+    const ws = this.ws;
+    this.ws = null;
+    this.stopHeartbeat();
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(4000, 'replaced');
+      }
+    } catch {}
   }
 
   connect() {
-    if (this.connectionState === 'connecting') return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
 
@@ -27,20 +48,24 @@ export class WebSocketClient extends EventTarget {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    // Close only fully stale sockets before reconnecting
-    if (this.ws && (this.ws.readyState === WebSocket.CLOSING || this.ws.readyState === WebSocket.CLOSED)) {
-      this.ws = null;
-    }
-    this.ws = new WebSocket(this.url);
+    this._abandonSocket();
+    const id = ++this.socketId;
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
+      if (id !== this.socketId || this.ws !== ws) return;
       console.log('[WS] Connected');
       this.reconnectAttempts = 0;
       this.connectionState = 'open';
+      this.lastPongAt = Date.now();
+      try { ws.send(JSON.stringify({ type: 'mirror_hello', ...(this.resumeHint || {}) })); } catch {}
+      this.startHeartbeat();
       this.dispatchEvent(new CustomEvent('connected'));
     };
 
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (id !== this.socketId || this.ws !== ws) return;
       try {
         const message = JSON.parse(event.data);
         this.handleMessage(message);
@@ -49,13 +74,17 @@ export class WebSocketClient extends EventTarget {
       }
     };
 
-    this.ws.onerror = (error) => {
+    ws.onerror = (error) => {
+      if (id !== this.socketId || this.ws !== ws) return;
       console.error('[WS] Error:', error);
       this.dispatchEvent(new CustomEvent('error', { detail: error }));
     };
 
-    this.ws.onclose = (event) => {
+    ws.onclose = (event) => {
+      if (id !== this.socketId || this.ws !== ws) return;
       console.log(`[WS] Disconnected (code=${event.code}, reason=${event.reason || 'n/a'})`);
+      this.stopHeartbeat();
+      this.ws = null;
       this.connectionState = 'closed';
       this.dispatchEvent(new CustomEvent('disconnected'));
 
@@ -72,27 +101,29 @@ export class WebSocketClient extends EventTarget {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws) {
-      this.ws.close();
-    }
+    this._abandonSocket();
   }
 
-  // Force reconnect — resets attempt counter and connects fresh
+  // Drop a possibly-dead socket immediately. After sleep, close() on a
+  // zombie OPEN socket can sit in CLOSING until TCP times out.
   forceReconnect() {
+    const now = Date.now();
+    if (now - this.lastForceAt < 500) return;
+    this.lastForceAt = now;
     this.reconnectAttempts = 0;
     this.isIntentionallyClosed = false;
     this.connectionState = 'closed';
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.close(1000, 'force reconnect'); } catch (e) {}
-    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this._abandonSocket();
     this.connect();
   }
 
   attemptReconnect() {
+    if (this.isIntentionallyClosed) return;
+    if (this.reconnectTimer) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('[WS] Max reconnection attempts reached');
       this.dispatchEvent(new CustomEvent('reconnectFailed'));
@@ -101,13 +132,65 @@ export class WebSocketClient extends EventTarget {
 
     this.reconnectAttempts++;
     const delay = Math.min(this.maxReconnectDelay, this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1));
-    
+
     console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-    
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      if (this.lastPongAt && Date.now() - this.lastPongAt > 28000) {
+        console.log('[WS] Heartbeat stalled, reconnecting');
+        this.forceReconnect();
+        return;
+      }
+      this.sendPing();
+    }, 12000);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  sendPing() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  probe(timeout = 1200) {
+    if (this.probeInFlight) return this.probeInFlight;
+    this.probeInFlight = new Promise((resolve) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        resolve(false);
+        return;
+      }
+      const onPong = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeout);
+      const finish = (ok) => {
+        clearTimeout(timer);
+        this.removeEventListener('pong', onPong);
+        this.probeInFlight = null;
+        resolve(ok);
+      };
+      this.addEventListener('pong', onPong);
+      if (!this.sendPing()) finish(false);
+    });
+    return this.probeInFlight;
   }
 
   send(data) {
@@ -135,6 +218,14 @@ export class WebSocketClient extends EventTarget {
         break;
       case 'mirror_sync':
         this.dispatchEvent(new CustomEvent('mirrorSync', { detail: message }));
+        break;
+      case 'pong':
+        this.lastPongAt = Date.now();
+        this.dispatchEvent(new CustomEvent('pong', { detail: message }));
+        break;
+      case 'mirror_hello_ok':
+        this.lastPongAt = Date.now();
+        this.dispatchEvent(new CustomEvent('mirrorHelloOk', { detail: message }));
         break;
       default:
         console.warn('[WS] Unknown message type:', message.type);

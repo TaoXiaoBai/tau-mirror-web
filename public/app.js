@@ -241,20 +241,58 @@ window.addEventListener('blur', () => {
   hasFocus = false;
 });
 
-// Reconnect WebSocket when returning to the app (iOS suspends WS connections)
-let _visReconnTimer = null;
+// Sleep / lock / tab-hide all leave the socket looking OPEN. Probe it instead
+// of waiting for TCP timeout, and skip a full history redraw when nothing changed.
+let _resumeTimer = null;
+let _lastWakeCheck = Date.now();
+const WAKE_GAP_MS = 25000;
+
+async function resumeAfterSleep(reason = 'resume') {
+  if (document.visibilityState === 'hidden') return;
+  if (_resumeTimer) {
+    clearTimeout(_resumeTimer);
+    _resumeTimer = null;
+  }
+  _lastWakeCheck = Date.now();
+  const state = wsClient.ws?.readyState;
+  if (state !== WebSocket.OPEN) {
+    console.log(`[App] ${reason}: socket not open, reconnecting`);
+    wsClient.forceReconnect();
+    return;
+  }
+  const alive = await wsClient.probe(900);
+  if (alive) {
+    pollInstances();
+    return;
+  }
+  if (document.visibilityState === 'hidden') return;
+  console.log(`[App] ${reason}: stale socket, reconnecting`);
+  wsClient.forceReconnect();
+}
+
+function scheduleResumeCheck(reason, delay = 80) {
+  if (_resumeTimer) clearTimeout(_resumeTimer);
+  _resumeTimer = setTimeout(() => {
+    _resumeTimer = null;
+    resumeAfterSleep(reason);
+  }, delay);
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && wsClient.ws?.readyState !== WebSocket.OPEN) {
-    if (_visReconnTimer) clearTimeout(_visReconnTimer);
-    _visReconnTimer = setTimeout(() => {
-      _visReconnTimer = null;
-      if (wsClient.ws?.readyState !== WebSocket.OPEN) {
-        console.log('[App] Returning to app, reconnecting...');
-        wsClient.forceReconnect();
-      }
-    }, 500);
+  if (document.visibilityState === 'visible') scheduleResumeCheck('visible');
+});
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted || Date.now() - _lastWakeCheck > WAKE_GAP_MS) {
+    scheduleResumeCheck('pageshow');
   }
 });
+window.addEventListener('online', () => scheduleResumeCheck('online', 0));
+setInterval(() => {
+  const now = Date.now();
+  const gap = now - _lastWakeCheck;
+  _lastWakeCheck = now;
+  if (gap > WAKE_GAP_MS) scheduleResumeCheck('clock-jump', 0);
+}, 4000);
 
 // ═══════════════════════════════════════
 // Scroll-to-bottom button + new message indicator
@@ -1963,7 +2001,29 @@ async function switchSession(sessionFile, session = null, project = null) {
 
 let lastSyncSessionFile = null;
 let lastSyncEntryCount = 0;
+let lastSyncEntrySig = '';
 let renderGeneration = 0;
+
+function entrySignature(entry) {
+  if (!entry) return '';
+  const msg = entry.message || {};
+  const content = Array.isArray(msg.content) ? msg.content : [];
+  const last = content[content.length - 1];
+  const text = typeof last?.text === 'string' ? last.text : '';
+  return [entry.type || '', msg.role || '', content.length, text.length, text.slice(-24)].join(':');
+}
+
+function rememberSyncHint(data, entries = data.entries || []) {
+  lastSyncSessionFile = data.sessionFile || null;
+  lastSyncEntryCount = entries.length;
+  const last = entries[entries.length - 1];
+  lastSyncEntrySig = data.entrySig || entrySignature(last);
+  wsClient.resumeHint = {
+    sessionFile: lastSyncSessionFile,
+    entryCount: lastSyncEntryCount,
+    entrySig: lastSyncEntrySig,
+  };
+}
 
 function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
@@ -1996,14 +2056,17 @@ function handleMirrorSync(data) {
   }
 
   const entries = data.entries || [];
+  const incomingSig = data.entrySig || entrySignature(entries[entries.length - 1]);
 
-  // Fast reconciliation: skip re-render if same session with same entry count
+  // Fast reconciliation: skip re-render if same session with same tail.
   if (
     lastSyncSessionFile === data.sessionFile &&
     lastSyncEntryCount === entries.length &&
+    lastSyncEntrySig === incomingSig &&
     messagesContainer.children.length > 0
   ) {
     console.log('[Mirror] Session unchanged on reconnect, skipping re-render');
+    rememberSyncHint(data, entries);
     updateCostDisplay();
     updateTokenUsage();
     return;
@@ -2023,12 +2086,40 @@ function handleMirrorSync(data) {
     messageRenderer.renderWelcome();
   }
 
-  lastSyncSessionFile = data.sessionFile || null;
-  lastSyncEntryCount = entries.length;
+  rememberSyncHint(data, entries);
 
   updateCostDisplay();
   updateTokenUsage();
 }
+
+wsClient.addEventListener('mirrorHelloOk', (e) => {
+  const data = e.detail || {};
+  isMirrorMode = true;
+  if (data.sessionFile) mirrorActiveSessionFile = data.sessionFile;
+  viewingActiveSession = true;
+  if (data.model) {
+    currentModelId = data.model.id || currentModelId;
+    currentModelProvider = data.model.provider || currentModelProvider;
+    updateModelLabel();
+    applyContextWindow(getCurrentModel() || data.model);
+  }
+  if (data.thinkingLevel) {
+    currentThinkingLevel = data.thinkingLevel;
+    updateThinkingBtn();
+  }
+  lastSyncSessionFile = data.sessionFile || lastSyncSessionFile;
+  lastSyncEntryCount = data.entryCount ?? lastSyncEntryCount;
+  lastSyncEntrySig = data.entrySig || lastSyncEntrySig;
+  wsClient.resumeHint = {
+    sessionFile: lastSyncSessionFile,
+    entryCount: lastSyncEntryCount,
+    entrySig: lastSyncEntrySig,
+  };
+  updateMirrorInputState();
+  updateMirrorLiveIndicator();
+  updateCostDisplay();
+  updateTokenUsage();
+});
 
 // Mark all live sessions in the sidebar with a green dot
 function updateMirrorLiveIndicator() {
@@ -2049,7 +2140,7 @@ async function pollInstances() {
   if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) return;
   pollInFlight = true;
   try {
-    const res = await fetch('/api/instances');
+    const res = await fetch('/api/instances', { signal: AbortSignal.timeout(2500) });
     if (res.ok) {
       const data = await res.json();
       liveInstances = data.instances || [];
