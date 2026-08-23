@@ -64,13 +64,17 @@
           <div class="header-cluster">
             <div class="model-dropdown" id="model-dropdown">
               <button class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="switchModel">
-                <span class="model-dropdown-kicker" data-i18n="model">Model</span>
-                <span class="model-dropdown-label" id="model-dropdown-label" data-i18n="readingModels">Loading…</span>
-                <svg class="model-dropdown-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span class="model-dropdown-copy">
+                  <span class="model-dropdown-kicker" id="model-dropdown-kicker">Model</span>
+                  <span class="model-dropdown-label" id="model-dropdown-label" data-i18n="readingModels">Loading…</span>
+                </span>
+                <svg class="model-dropdown-chevron" width="8" height="5" viewBox="0 0 10 6" fill="none" aria-hidden="true"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
               <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
             </div>
-            <button class="model-refresh-btn" id="model-refresh-btn" title="Reload Pi model list" aria-label="Refresh models" data-i18n-title="refreshModels" data-i18n-aria="refreshModels">↻</button>
+            <button class="model-refresh-btn" id="model-refresh-btn" title="Reload Pi model list" aria-label="Refresh models" data-i18n-title="refreshModels" data-i18n-aria="refreshModels">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+            </button>
             <div class="thinking-control" id="thinking-control">
               <button class="thinking-tag" id="thinking-btn" title="Set thinking level" aria-haspopup="listbox" aria-expanded="false" data-i18n="thinkingOff" data-i18n-title="setThinking">Thinking: Off</button>
               <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="Thinking level"></div>

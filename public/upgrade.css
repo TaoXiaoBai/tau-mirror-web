@@ -173,11 +173,11 @@ textarea {
 }
 
 .header-cluster {
-  gap: 2px;
+  gap: 1px;
   padding: 2px;
-  border: 1px solid color-mix(in srgb, var(--tau-divider) 70%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--tau-surface) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tau-divider) 55%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--tau-surface) 55%, transparent);
 }
 
 .header-cluster-metrics {
@@ -204,16 +204,18 @@ textarea {
 }
 
 .model-dropdown-btn {
-  max-width: min(300px, 36vw);
-  height: 28px;
-  padding: 0 8px;
+  max-width: min(248px, 34vw);
+  min-height: 32px;
+  height: auto;
+  padding: 3px 7px 3px 8px;
   gap: 6px;
   border-radius: 8px;
-  background: transparent;
+  background: color-mix(in srgb, var(--bg-solid) 55%, transparent);
   border: 1px solid transparent;
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
+  white-space: normal;
 }
 
 .model-dropdown-btn:hover,
@@ -222,34 +224,72 @@ textarea {
   border-color: var(--border-hover);
 }
 
+.model-dropdown-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  line-height: 1.15;
+}
+
 .model-dropdown-kicker {
-  padding-right: 6px;
-  border-right: 1px solid var(--tau-divider);
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
   color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
+  font-size: 9px;
+  font-weight: 550;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .model-dropdown-label {
-  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.model-dropdown-chevron {
+  flex-shrink: 0;
+  opacity: 0.42;
+}
+
+.model-dropdown.open .model-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
 .model-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 26px;
   height: 26px;
   border: 0;
+  border-radius: 7px;
   background: transparent;
-  font-size: 14px;
-  opacity: 0.52;
+  color: var(--text-dim);
+  font-size: 13px;
+  opacity: 0.72;
 }
 
 .model-refresh-btn:hover {
+  background: var(--tau-surface-hover);
+  color: var(--text-primary);
   opacity: 1;
   border: 0;
+}
+
+.model-refresh-btn svg {
+  display: block;
 }
 
 /* ---------- model library ---------- */
@@ -475,6 +515,9 @@ textarea {
 /* ---------- explicit thinking selector ---------- */
 .thinking-control {
   position: relative;
+  margin-left: 2px;
+  padding-left: 5px;
+  border-left: 1px solid var(--tau-divider);
 }
 
 .thinking-tag {
@@ -483,16 +526,17 @@ textarea {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   font-family: inherit;
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 520;
 }
 
 .thinking-tag:hover,
 .thinking-control.open .thinking-tag {
   background: var(--tau-surface-hover);
-  border-color: var(--border-hover);
+  border-color: transparent;
+  color: var(--text-secondary);
 }
 
 .thinking-tag.off,
@@ -508,10 +552,10 @@ textarea {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   font-family: inherit;
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 520;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -519,7 +563,8 @@ textarea {
 
 .plan-tag:hover {
   background: var(--tau-surface-hover);
-  border-color: var(--border-hover);
+  border-color: transparent;
+  color: var(--text-secondary);
 }
 
 .plan-tag.active {
@@ -1305,6 +1350,7 @@ textarea {
 
   .model-dropdown-btn {
     max-width: calc(100vw - 205px);
+    min-height: 28px;
     height: 28px;
     padding: 0 7px;
   }
@@ -1312,6 +1358,17 @@ textarea {
   .model-dropdown-kicker,
   .model-refresh-btn {
     display: none;
+  }
+
+  .model-dropdown-copy {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .thinking-control {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
   }
 
   .thinking-tag {

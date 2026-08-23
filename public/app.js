@@ -83,6 +83,9 @@ onLocaleChange(() => {
   applyDomTranslations();
   refreshLangSelectLabels();
   if (langSelect) langSelect.value = getLocalePreference();
+  updateModelLabel();
+  updateThinkingBtn();
+  updatePlanModeBtn();
 });
 const historyResumeBar = document.getElementById('history-resume-bar');
 const historyResumeBtn = document.getElementById('history-resume-btn');
@@ -1042,6 +1045,7 @@ async function showSessionStats() {
 const modelDropdown = document.getElementById('model-dropdown');
 const modelDropdownBtn = document.getElementById('model-dropdown-btn');
 const modelDropdownLabel = document.getElementById('model-dropdown-label');
+const modelDropdownKicker = document.getElementById('model-dropdown-kicker');
 const modelDropdownMenu = document.getElementById('model-dropdown-menu');
 const modelRefreshBtn = document.getElementById('model-refresh-btn');
 const thinkingControl = document.getElementById('thinking-control');
@@ -1284,9 +1288,12 @@ async function loadModelInfo(options = {}) {
 function updateModelLabel() {
   const model = getCurrentModel();
   const modelName = model ? formatModelName(model) : (currentModelId || t('pickModel'));
-  const provider = formatProvider(currentModelProvider);
-  modelDropdownLabel.textContent = modelName;
-  modelDropdownBtn.title = model ? t('currentModel', { provider, name: modelName }) : t('switchModel');
+  const provider = currentModelProvider ? formatProvider(currentModelProvider) : t('model');
+  if (modelDropdownLabel) modelDropdownLabel.textContent = modelName;
+  if (modelDropdownKicker) modelDropdownKicker.textContent = provider;
+  if (modelDropdownBtn) {
+    modelDropdownBtn.title = model ? t('currentModel', { provider, name: modelName }) : t('switchModel');
+  }
   updateThinkingBtn();
 }
 
