@@ -1021,6 +1021,39 @@ textarea {
   display: none;
 }
 
+.history-resume-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-delete-btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, #f87171 38%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, #f87171 10%, var(--bg-solid));
+  color: #f87171;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.history-delete-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #f87171 18%, var(--bg-solid));
+}
+
+.history-delete-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
 .history-resume-copy {
   display: flex;
   min-width: 0;

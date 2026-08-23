@@ -670,6 +670,14 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.context-menu-item.danger {
+  color: #f87171;
+}
+
+.context-menu-item.danger:hover {
+  background: color-mix(in srgb, #f87171 14%, transparent);
+}
+
 .context-menu-icon {
   width: 16px;
   text-align: center;
@@ -772,8 +780,43 @@ body {
   transition: all var(--duration) var(--ease);
 }
 
-.session-item:hover .session-rename-btn {
+.session-item:hover .session-rename-btn,
+.session-item:focus-within .session-rename-btn,
+.session-item.active .session-rename-btn {
   display: flex;
+}
+
+.session-delete-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  touch-action: manipulation;
+}
+
+.session-item:hover .session-delete-btn,
+.session-item:focus-within .session-delete-btn,
+.session-item.active .session-delete-btn {
+  display: flex;
+}
+
+.session-item.mirror-live .session-delete-btn {
+  display: none !important;
+}
+
+.session-delete-btn:hover,
+.session-delete-btn:focus-visible {
+  background: color-mix(in srgb, #f87171 16%, transparent);
+  color: #f87171;
 }
 
 .session-rename-btn:hover {
@@ -3687,6 +3730,10 @@ body.hide-thinking .thinking-block { display: none !important; }
 
   .session-item:hover {
     background: none;
+  }
+
+  .session-delete-btn {
+    display: flex;
   }
 
   .session-item:active {

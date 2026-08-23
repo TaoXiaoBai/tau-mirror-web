@@ -2232,29 +2232,37 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Session delete
+    // Session delete — only jsonl files inside the Pi sessions directory.
     if (urlPath === "/api/sessions/delete" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
       req.on("end", () => {
         try {
           const { filePath } = JSON.parse(body);
-          if (!filePath || typeof filePath !== "string") {
+          const sessionPath = resolveAllowedSessionPath(String(filePath || ""));
+          if (!sessionPath) {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "filePath required" }));
+            res.end(JSON.stringify({ error: "invalid" }));
             return;
           }
-          if (!fs.existsSync(filePath)) {
-            res.writeHead(404, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Session not found" }));
+          const currentFile = latestCtx?.sessionManager.getSessionFile();
+          const isLive =
+            (currentFile && path.resolve(currentFile) === sessionPath) ||
+            getRunningInstances().some((inst) => {
+              try { return path.resolve(inst.sessionFile || "") === sessionPath; }
+              catch { return false; }
+            });
+          if (isLive) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "live" }));
             return;
           }
-          fs.unlinkSync(filePath);
+          fs.unlinkSync(sessionPath);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
         } catch (err: any) {
           res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err.message }));
+          res.end(JSON.stringify({ error: err.message || "delete_failed" }));
         }
       });
       return;

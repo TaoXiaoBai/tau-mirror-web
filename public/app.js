@@ -25,7 +25,8 @@ const dialogHandler = new DialogHandler(document.getElementById('dialog-containe
 // Session sidebar
 const sidebar = new SessionSidebar(
   document.getElementById('session-list'),
-  handleSessionSelect
+  handleSessionSelect,
+  { onSessionDeleted: handleSessionDeleted }
 );
 
 // UI elements
@@ -89,6 +90,7 @@ onLocaleChange(() => {
 });
 const historyResumeBar = document.getElementById('history-resume-bar');
 const historyResumeBtn = document.getElementById('history-resume-btn');
+const historyDeleteBtn = document.getElementById('history-delete-btn');
 
 // State tracking
 let currentStreamingElement = null;
@@ -1897,6 +1899,7 @@ async function newSession() {
 }
 
 async function handleSessionSelect(session, project) {
+  if (!session?.filePath) return;
   sidebar.setActive(session.filePath);
   sessionTotalCost = 0;
   lastInputTokens = 0;
@@ -1909,6 +1912,32 @@ async function handleSessionSelect(session, project) {
     sidebarEl.classList.add('collapsed');
     sidebarOverlay.classList.remove('visible');
   }
+}
+
+function handleSessionDeleted(ok, session, message) {
+  if (!ok) {
+    if (message) showToast(message, 'error', 4200);
+    return;
+  }
+  if (message) showToast(message, 'success', 2400);
+  const deletedPath = session?.filePath;
+  const viewingDeleted =
+    deletedPath &&
+    (historyPreviewSessionFile === deletedPath || sidebar.activeSessionFile === deletedPath);
+  if (!viewingDeleted) return;
+
+  historyPreviewSessionFile = null;
+  viewingActiveSession = true;
+  historyResumeBar?.classList.add('hidden');
+  if (isMirrorMode && mirrorActiveSessionFile) {
+    sidebar.setActive(mirrorActiveSessionFile);
+    updateMirrorInputState();
+    wsClient.send({ type: 'mirror_sync_request' });
+    return;
+  }
+  messageRenderer.clear();
+  messageRenderer.renderWelcome();
+  updateMirrorInputState();
 }
 
 async function switchSession(sessionFile, session = null, project = null) {
@@ -2173,6 +2202,17 @@ function updateMirrorInputState() {
     inputArea?.classList.add('mirror-readonly');
   }
 }
+
+historyDeleteBtn?.addEventListener('click', async () => {
+  const sessionFile = historyPreviewSessionFile;
+  if (!sessionFile || historyDeleteBtn.disabled) return;
+  let session = null;
+  for (const project of sidebar.projects || []) {
+    session = (project.sessions || []).find((item) => item.filePath === sessionFile);
+    if (session) break;
+  }
+  await sidebar.deleteSession(session || { filePath: sessionFile }, null);
+});
 
 historyResumeBtn?.addEventListener('click', async () => {
   const sessionFile = historyPreviewSessionFile;

@@ -146,7 +146,10 @@
         <div class="image-previews hidden" id="image-previews"></div>
         <div class="history-resume-bar hidden" id="history-resume-bar">
           <span class="history-resume-copy"><strong data-i18n="historyViewing">You are viewing history</strong><small data-i18n="historyViewingHint">Restore the full context, then keep chatting from here.</small></span>
-          <button type="button" class="history-resume-btn" id="history-resume-btn" aria-label="Continue this conversation" data-i18n="continueChat" data-i18n-aria="continueChat">Continue</button>
+          <div class="history-resume-actions">
+            <button type="button" class="history-delete-btn" id="history-delete-btn" aria-label="Delete this session" data-i18n="deleteSession" data-i18n-aria="deleteSessionTitle">Delete</button>
+            <button type="button" class="history-resume-btn" id="history-resume-btn" aria-label="Continue this conversation" data-i18n="continueChat" data-i18n-aria="continueChat">Continue</button>
+          </div>
         </div>
         <form id="chat-form">
           <div class="input-left-actions">

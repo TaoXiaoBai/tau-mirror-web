@@ -2,10 +2,13 @@
  * Session Sidebar - Lists sessions grouped by project, handles switching
  */
 
+import { t } from './i18n.js';
+
 export class SessionSidebar {
-  constructor(container, onSessionSelect) {
+  constructor(container, onSessionSelect, options = {}) {
     this.container = container;
     this.onSessionSelect = onSessionSelect;
+    this.onSessionDeleted = options.onSessionDeleted || null;
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -119,7 +122,7 @@ export class SessionSidebar {
         item.classList.add('active');
       }
 
-      const title = result.sessionName || result.firstMessage || 'Untitled';
+      const title = result.sessionName || result.firstMessage || t('untitledSession');
       const snippet = result.matches[0]?.snippet || '';
       const matchCount = result.matches.length;
       const time = this.formatTime(result.sessionTimestamp);
@@ -127,22 +130,31 @@ export class SessionSidebar {
       item.innerHTML = `
         <div class="session-title-row">
           <div class="session-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</div>
+          <button type="button" class="session-delete-btn" title="${this.escapeHtml(t('deleteSessionTitle'))}" aria-label="${this.escapeHtml(t('deleteSessionTitle'))}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
         </div>
         <div class="search-snippet">${this.highlightMatch(snippet, this.searchQuery)}</div>
         <div class="session-meta">${time}${matchCount > 1 ? ` · ${matchCount} matches` : ''}</div>
       `;
 
-      // Find the matching project/session to pass to onSessionSelect
-      item.addEventListener('click', () => {
+      const findSession = () => {
         for (const project of this.projects) {
           const session = project.sessions.find(s => s.filePath === result.filePath);
-          if (session) {
-            this.onSessionSelect(session, project);
-            return;
-          }
+          if (session) return { session, project };
         }
-        // Session not in loaded list (unlikely) — try switching by path
-        this.onSessionSelect({ filePath: result.filePath, name: result.sessionName }, { path: result.project });
+        return { session: { filePath: result.filePath, name: result.sessionName, firstMessage: result.firstMessage }, project: { path: result.project } };
+      };
+
+      item.addEventListener('click', () => {
+        const found = findSession();
+        this.onSessionSelect(found.session, found.project);
+      });
+      item.querySelector('.session-delete-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const found = findSession();
+        this.deleteSession(found.session, item);
       });
 
       sessionsDiv.appendChild(item);
@@ -222,15 +234,15 @@ export class SessionSidebar {
     menu.className = 'session-context-menu';
 
     const items = [
-      { icon: isFav ? '★' : '☆', label: isFav ? 'Unfavourite' : 'Favourite', action: () => this.toggleFavourite(session.filePath) },
-      { icon: '✎', label: 'Rename', action: () => this.startRename(itemEl) },
-      { icon: '📋', label: 'Export HTML', action: () => this.exportSession(session) },
-      { icon: '🗑', label: 'Delete', action: () => this.deleteSession(session, itemEl) },
+      { icon: isFav ? '★' : '☆', label: isFav ? t('unfavourite') : t('favourite'), action: () => this.toggleFavourite(session.filePath) },
+      { icon: '✎', label: t('renameSession'), action: () => this.startRename(itemEl) },
+      { icon: '📋', label: t('exportHtml'), action: () => this.exportSession(session) },
+      { icon: '🗑', label: t('deleteSession'), action: () => this.deleteSession(session, itemEl), danger: true },
     ];
 
     for (const item of items) {
       const row = document.createElement('div');
-      row.className = 'context-menu-item';
+      row.className = 'context-menu-item' + (item.danger ? ' danger' : '');
       row.innerHTML = `<span class="context-menu-icon">${item.icon}</span>${item.label}`;
       row.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -297,30 +309,59 @@ export class SessionSidebar {
     });
   }
 
+  sessionLabel(session) {
+    return session?.name || session?.firstMessage || t('emptySession');
+  }
+
   async deleteSession(session, itemEl) {
-    if (!confirm(`Delete "${session.name || session.firstMessage || 'this session'}"?`)) return;
+    if (!session?.filePath) return false;
+    const name = this.sessionLabel(session);
+    if (!confirm(t('deleteSessionConfirm', { name }))) return false;
     try {
       const res = await fetch('/api/sessions/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath: session.filePath }),
+        signal: AbortSignal.timeout(4000),
       });
-      if (res.ok) {
-        itemEl.remove();
-        // Remove from favourites if present
-        const favIdx = this.favourites.indexOf(session.filePath);
-        if (favIdx >= 0) {
-          this.favourites.splice(favIdx, 1);
-          this.saveFavourites();
-        }
-        // If this was the active session, clear it
-        if (session.filePath === this.activeSessionFile) {
-          this.clearActive();
-          if (this.onSessionSelect) this.onSessionSelect(null, null);
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data.error === 'live'
+          ? t('deleteSessionLive')
+          : data.error === 'invalid'
+            ? t('deleteSessionGone')
+            : t('deleteSessionFail');
+        this.onSessionDeleted?.(false, session, msg);
+        return false;
       }
+
+      this.projects = this.projects.map((project) => ({
+        ...project,
+        sessions: (project.sessions || []).filter((item) => item.filePath !== session.filePath),
+      })).filter((project) => project.sessions.length > 0);
+
+      const favIdx = this.favourites.indexOf(session.filePath);
+      if (favIdx >= 0) {
+        this.favourites.splice(favIdx, 1);
+        this.saveFavourites();
+      }
+      if (this._searchResults) {
+        this._searchResults = this._searchResults.filter((item) => item.filePath !== session.filePath);
+      }
+      this.render();
+      if (this.searchQuery) {
+        this.applySearch();
+        if (this._searchResults?.length) this.renderSearchResults();
+      }
+
+      const wasActive = session.filePath === this.activeSessionFile;
+      if (wasActive) this.clearActive();
+      this.onSessionDeleted?.(true, session, t('deleteSessionOk'));
+      return true;
     } catch (e) {
       console.error('[Sidebar] Delete failed:', e);
+      this.onSessionDeleted?.(false, session, t('deleteSessionFail'));
+      return false;
     }
   }
 
@@ -350,7 +391,7 @@ export class SessionSidebar {
       item.classList.add('active');
     }
 
-    const title = session.name || session.firstMessage || 'Empty session';
+    const title = this.sessionLabel(session);
     const time = this.formatTime(session.timestamp);
     const tmuxTag = session.tmux ? '<span class="session-tag tmux-tag">tmux</span>' : '';
     const favIcon = this.isFavourite(session.filePath) ? '<span class="session-fav-icon">★</span>' : '';
@@ -360,12 +401,20 @@ export class SessionSidebar {
         ${favIcon}
         <div class="session-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</div>
         ${tmuxTag}
+        <button type="button" class="session-delete-btn" title="${this.escapeHtml(t('deleteSessionTitle'))}" aria-label="${this.escapeHtml(t('deleteSessionTitle'))}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button>
       </div>
       <div class="session-meta">${time}</div>
     `;
 
     item.addEventListener('click', () => this.onSessionSelect(session, project));
     item.addEventListener('contextmenu', (e) => this.showContextMenu(e, session, project, item));
+    item.querySelector('.session-delete-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.deleteSession(session, item);
+    });
 
     return item;
   }
