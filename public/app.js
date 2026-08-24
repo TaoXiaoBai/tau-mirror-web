@@ -20,6 +20,7 @@ const wsClient = new WebSocketClient(wsUrl);
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById('messages'));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById('messages'));
+toolCardRenderer.setScrollCallback(() => messageRenderer.scrollToBottom());
 const dialogHandler = new DialogHandler(document.getElementById('dialog-container'), wsClient);
 
 // Session sidebar
@@ -109,9 +110,19 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let historyPreviewSessionFile = null;
+let historyPageState = null;
+let historyPageAbort = null;
+let historyBufferedEntries = [];
+let historyBufferedLoading = false;
 let isMirrorMode = false; // Set when mirror_sync received
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 let connectionState = 'connecting';
+
+function sessionPageLocation(filePath) {
+  const parts = String(filePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  return { dirName: parts[parts.length - 2], file: parts[parts.length - 1] };
+}
 
 function showToast(message, type = 'info', duration = 2600) {
   if (!toastRegion || !message) return;
@@ -301,13 +312,72 @@ setInterval(() => {
 // ═══════════════════════════════════════
 
 let scrollBtnPending = false;
+let previousMessagesScrollTop = 0;
+async function loadOlderHistoryPage() {
+  if (historyBufferedLoading || historyPageState?.loading) return;
+  if (historyBufferedEntries.length > 0) {
+    historyBufferedLoading = true;
+    const start = Math.max(0, historyBufferedEntries.length - 60);
+    const chunk = historyBufferedEntries.splice(start);
+    renderSessionHistory(chunk, {
+      prepend: true,
+      deferOlder: false,
+      accountMetrics: false,
+      onDone: () => { historyBufferedLoading = false; },
+    });
+    return;
+  }
+
+  const page = historyPageState;
+  if (!page?.hasMore || page.loading || page.generation !== renderGeneration) return;
+  page.loading = true;
+  let renderOwnsLoading = false;
+  try {
+    const before = page.bootstrap ? '' : `&before=${page.cursor}`;
+    const limit = page.bootstrap ? (page.bootstrapLimit || 200) : 120;
+    const url = `/api/sessions/${encodeURIComponent(page.dirName)}/${encodeURIComponent(page.file)}?limit=${limit}${before}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (page !== historyPageState || page.generation !== renderGeneration) return;
+    page.cursor = Number(data.cursor) || 0;
+    page.hasMore = !!data.hasMore;
+    if (page.bootstrap) {
+      page.bootstrap = false;
+      page.loading = false;
+      if (page.hasMore) queueMicrotask(() => loadOlderHistoryPage());
+      return;
+    }
+    if (data.entries?.length) {
+      renderOwnsLoading = true;
+      renderSessionHistory(data.entries, {
+        prepend: true,
+        onDone: () => {
+          if (page === historyPageState) page.loading = false;
+        },
+      });
+    }
+  } catch (error) {
+    if (error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
+      console.warn('[History] Could not load older page:', error);
+    }
+  } finally {
+    if (!renderOwnsLoading && page === historyPageState) page.loading = false;
+  }
+}
+
 messagesContainer.addEventListener('scroll', () => {
   if (scrollBtnPending) return;
   scrollBtnPending = true;
   requestAnimationFrame(() => {
     scrollBtnPending = false;
     const threshold = 150;
+    const currentTop = messagesContainer.scrollTop;
+    const movingUp = currentTop + 8 < previousMessagesScrollTop;
+    previousMessagesScrollTop = currentTop;
+    if (movingUp && currentTop < 500) loadOlderHistoryPage();
     const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
+    messageRenderer.isNearBottom = atBottom;
     isScrolledUp = !atBottom;
     if (atBottom) {
       scrollBottomBtn.classList.add('hidden');
@@ -319,9 +389,23 @@ messagesContainer.addEventListener('scroll', () => {
   });
 }, { passive: true });
 
-scrollBottomBtn.addEventListener('click', () => {
+messagesContainer.addEventListener('wheel', (event) => {
+  if (event.deltaY < 0 && messagesContainer.scrollTop < 500) loadOlderHistoryPage();
+}, { passive: true });
+
+function jumpMessagesToBottom() {
+  const previous = messagesContainer.style.scrollBehavior;
+  messagesContainer.style.scrollBehavior = 'auto';
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  previousMessagesScrollTop = messagesContainer.scrollTop;
   messageRenderer.isNearBottom = true;
+  requestAnimationFrame(() => {
+    messagesContainer.style.scrollBehavior = previous;
+  });
+}
+
+scrollBottomBtn.addEventListener('click', () => {
+  jumpMessagesToBottom();
   isScrolledUp = false;
   scrollBottomBtn.classList.add('hidden');
   scrollBottomBadge.classList.add('hidden');
@@ -490,6 +574,8 @@ let pendingThinkingDelta = '';
 let pendingTextDelta = '';
 let streamingFrame = null;
 let answerStreamStarted = false;
+const pendingToolUpdates = new Map();
+let toolUpdateFrame = null;
 
 function flushStreamingDeltas() {
   if (streamingFrame !== null) {
@@ -652,20 +738,36 @@ function handleToolExecutionStart(event) {
   toolCardRenderer.createToolCard(state.getToolExecution(toolCallId));
 }
 
+function applyToolExecutionUpdate(toolCallId, partialResult) {
+  const output = formatToolOutput(partialResult);
+  state.updateToolExecution(toolCallId, { status: 'streaming', output });
+  toolCardRenderer.updateToolCard(state.getToolExecution(toolCallId));
+}
+
+function flushToolExecutionUpdates() {
+  toolUpdateFrame = null;
+  const updates = [...pendingToolUpdates.entries()];
+  pendingToolUpdates.clear();
+  for (const [toolCallId, partialResult] of updates) {
+    applyToolExecutionUpdate(toolCallId, partialResult);
+  }
+}
+
 function handleToolExecutionUpdate(event) {
   const { toolCallId, partialResult } = event;
-  const output = formatToolOutput(partialResult);
-
-  state.updateToolExecution(toolCallId, {
-    status: 'streaming',
-    output,
-  });
-
-  toolCardRenderer.updateToolCard(state.getToolExecution(toolCallId));
+  pendingToolUpdates.set(toolCallId, partialResult);
+  if (toolUpdateFrame === null) {
+    toolUpdateFrame = requestAnimationFrame(flushToolExecutionUpdates);
+  }
 }
 
 function handleToolExecutionEnd(event) {
   const { toolCallId, result, isError } = event;
+  if (pendingToolUpdates.has(toolCallId)) {
+    const partial = pendingToolUpdates.get(toolCallId);
+    pendingToolUpdates.delete(toolCallId);
+    applyToolExecutionUpdate(toolCallId, partial);
+  }
   const output = formatToolOutput(result);
 
   state.updateToolExecution(toolCallId, {
@@ -1823,6 +1925,13 @@ sidebarOverlay.addEventListener('click', () => {
 
 const newSessionBtn = document.getElementById('new-session-btn');
 newSessionBtn.addEventListener('click', () => {
+  renderGeneration++;
+  historyPageState = null;
+  historyBufferedEntries = [];
+  historyBufferedLoading = false;
+  if (historyPageAbort) historyPageAbort.abort();
+  historyPageAbort = null;
+  historyPreviewSessionFile = null;
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
@@ -1948,22 +2057,60 @@ function handleSessionDeleted(ok, session, message) {
     return;
   }
   messageRenderer.clear();
+  toolCardRenderer.clear();
   messageRenderer.renderWelcome();
   updateMirrorInputState();
 }
 
 async function switchSession(sessionFile, session = null, project = null) {
   try {
+    renderGeneration++;
+    const myGeneration = renderGeneration;
+    if (historyPageAbort) historyPageAbort.abort();
+    historyPageAbort = null;
+    historyPageState = null;
+    historyBufferedEntries = [];
+    historyBufferedLoading = false;
     historyPreviewSessionFile = sessionFile || null;
     // Clear any streaming state from previous session to prevent bleed
     currentStreamingElement = null;
     currentStreamingThinking = '';
     currentStreamingText = '';
     resetStreamingDeltas();
+    if (toolUpdateFrame !== null) cancelAnimationFrame(toolUpdateFrame);
+    toolUpdateFrame = null;
+    pendingToolUpdates.clear();
     
     state.reset();
     messageRenderer.clear();
     toolCardRenderer.clear();
+
+    // A running session will immediately provide its mirror snapshot. Do not
+    // parse the history file first and then throw that DOM away on mirror_sync.
+    if (isMirrorMode && sessionFile) {
+      const currentPort = Number(new URL(wsClient.url).port || location.port || 0);
+      const otherInstance = liveInstances.find((item) =>
+        item.sessionFile === sessionFile && Number(item.port) !== currentPort
+      );
+      if (otherInstance) {
+        const protocol = document.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsClient.disconnect();
+        wsClient.url = `${protocol}//${location.hostname}:${otherInstance.port}/ws`;
+        wsClient.forceReconnect();
+        mirrorActiveSessionFile = sessionFile;
+        historyPreviewSessionFile = null;
+        viewingActiveSession = true;
+        updateMirrorInputState();
+        return;
+      }
+      if (sessionFile === mirrorActiveSessionFile) {
+        historyPreviewSessionFile = null;
+        viewingActiveSession = true;
+        updateMirrorInputState();
+        wsClient.send({ type: 'mirror_sync_request' });
+        return;
+      }
+    }
 
     if (sessionFile && session) {
       messageRenderer.renderSystemMessage('正在读取会话…');
@@ -1973,16 +2120,39 @@ async function switchSession(sessionFile, session = null, project = null) {
       console.log('[App] Loading history:', { dirName, file, sessionFile });
 
       if (dirName && file) {
+        let controller = null;
         try {
-          const res = await fetch(`/api/sessions/${dirName}/${file}`);
-          console.log('[App] History fetch status:', res.status);
+          controller = new AbortController();
+          historyPageAbort = controller;
+          const url = `/api/sessions/${encodeURIComponent(dirName)}/${encodeURIComponent(file)}?limit=120`;
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
-          console.log('[App] History entries:', data.entries?.length || 0);
+          if (myGeneration !== renderGeneration) return;
+          console.log('[App] History page entries:', data.entries?.length || 0);
 
+          historyPageState = {
+            dirName,
+            file,
+            cursor: Number(data.cursor) || 0,
+            hasMore: !!data.hasMore,
+            loading: true,
+            generation: myGeneration,
+          };
           messageRenderer.clear();
-          renderSessionHistory(data.entries || []);
+          toolCardRenderer.clear();
+          renderSessionHistory(data.entries || [], {
+            onDone: () => {
+              if (historyPageState?.generation === myGeneration) historyPageState.loading = false;
+            },
+          });
         } catch (e) {
-          console.error('[App] History fetch error:', e);
+          if (e?.name !== 'AbortError') {
+            console.error('[App] History fetch error:', e);
+            showToast(t('historyLoadFail'), 'error', 4200);
+          }
+        } finally {
+          if (historyPageAbort === controller) historyPageAbort = null;
         }
       } else {
         console.log('[App] Skipped history load: dirName or file missing');
@@ -1991,33 +2161,11 @@ async function switchSession(sessionFile, session = null, project = null) {
       messageRenderer.renderWelcome();
     }
 
-    // In mirror mode, check if this session is live on any instance
+    // Historical previews are read-only in mirror mode. Running sessions
+    // returned above and never pay for this second session-file render.
     if (isMirrorMode) {
-      // Check if this session is live on a different instance
-      const otherInstance = liveInstances.find(i => i.sessionFile === sessionFile && i.port !== new URL(wsClient.url).port * 1);
-      if (otherInstance) {
-        // Reconnect to the other instance
-        const protocol = document.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const newUrl = `${protocol}//${location.hostname}:${otherInstance.port}/ws`;
-        console.log(`[App] Switching to instance on port ${otherInstance.port}`);
-        wsClient.disconnect();
-        wsClient.url = newUrl;
-        wsClient.forceReconnect();
-        mirrorActiveSessionFile = sessionFile;
-        historyPreviewSessionFile = null;
-        viewingActiveSession = true;
-        updateMirrorInputState();
-        return;
-      }
-
-      // Check if this is the active session on the current instance
-      viewingActiveSession = sessionFile === mirrorActiveSessionFile;
+      viewingActiveSession = false;
       updateMirrorInputState();
-
-      if (viewingActiveSession) {
-        // Re-request live state from the extension
-        wsClient.send({ type: 'mirror_sync_request' });
-      }
     } else {
       const res = await fetch('/api/sessions/switch', {
         method: 'POST',
@@ -2117,9 +2265,28 @@ function handleMirrorSync(data) {
   renderGeneration++;
 
   // Clear and render message history
+  historyPageState = null;
+  historyBufferedEntries = [];
+  historyBufferedLoading = false;
+  if (historyPageAbort) historyPageAbort.abort();
+  historyPageAbort = null;
   messageRenderer.clear();
+  toolCardRenderer.clear();
   sessionTotalCost = 0;
   lastInputTokens = 0;
+
+  const livePage = sessionPageLocation(data.sessionFile);
+  if (livePage) {
+    historyPageState = {
+      ...livePage,
+      cursor: 0,
+      hasMore: true,
+      loading: false,
+      bootstrap: true,
+      bootstrapLimit: 80,
+      generation: renderGeneration,
+    };
+  }
 
   if (entries.length > 0) {
     renderSessionHistory(entries);
@@ -2175,6 +2342,7 @@ function updateMirrorLiveIndicator() {
 
 // Poll for running instances to mark all live sessions
 let pollInFlight = false;
+let liveInstancesSignature = '';
 async function pollInstances() {
   if (document.visibilityState === 'hidden') return;
   if (pollInFlight) return;
@@ -2184,16 +2352,25 @@ async function pollInstances() {
     const res = await fetch('/api/instances', { signal: AbortSignal.timeout(2500) });
     if (res.ok) {
       const data = await res.json();
-      liveInstances = data.instances || [];
-      updateMirrorLiveIndicator();
+      const nextInstances = data.instances || [];
+      const signature = nextInstances
+        .map((item) => `${item.port || ''}:${item.sessionFile || ''}`)
+        .sort()
+        .join('|');
+      if (signature !== liveInstancesSignature) {
+        liveInstancesSignature = signature;
+        liveInstances = nextInstances;
+        updateMirrorLiveIndicator();
+      }
     }
   } catch {} finally {
     pollInFlight = false;
   }
 }
 
-// Poll every 5 seconds
-setInterval(pollInstances, 5000);
+// Poll every 12 seconds. Visibility checks and the WebSocket heartbeat already
+// handle wake/reconnect, so a 5-second DOM/status poll was unnecessary load.
+setInterval(pollInstances, 12000);
 pollInstances();
 
 // Enable/disable input based on whether we're viewing the live session
@@ -2252,159 +2429,192 @@ historyResumeBtn?.addEventListener('click', async () => {
 // Session history rendering
 // ═══════════════════════════════════════
 
-function renderSessionHistory(entries) {
-  console.log(`[History] Rendering ${entries.length} entries`);
+const HISTORY_VISIBLE_TAIL = 36;
+
+function scheduleHistoryWork(callback, background = false) {
+  if (background && typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => callback(), { timeout: 120 });
+    return;
+  }
+  requestAnimationFrame(() => setTimeout(callback, background ? 8 : 0));
+}
+
+function renderSessionHistory(entries, options = {}) {
+  const prepend = !!options.prepend;
+  const deferOlder = options.deferOlder !== false;
+  const accountMetrics = options.accountMetrics !== false;
   const myGeneration = renderGeneration;
   let userCount = 0, assistantCount = 0, toolCardCount = 0, toolResultCount = 0;
-
   const messages = entries.filter((entry) => entry.type === 'message' && entry.message);
-  let index = 0;
-  // Smaller batches yield to the main thread more often, preventing the
-  // browser from freezing while parsing markdown + math for long sessions.
-  const BATCH_SIZE = 8;
 
-  function renderOne(entry) {
+  // Metrics are cheap to aggregate from JSON and should not depend on whether
+  // a message has been materialized into DOM yet.
+  if (accountMetrics) {
+    for (const entry of messages) {
+      const usage = entry.message?.usage;
+      if (usage?.cost?.total) sessionTotalCost += usage.cost.total;
+    }
+    if (!prepend) {
+      const latestUsage = [...messages].reverse().find((entry) => entry.message?.usage?.input)?.message?.usage;
+      if (latestUsage?.input) {
+        lastInputTokens = latestUsage.input + (latestUsage.cacheRead || 0);
+        lastUsage = latestUsage;
+      }
+    }
+  }
+
+  const setMountTarget = (target) => {
+    messageRenderer.setMountTarget(target);
+    toolCardRenderer.setMountTarget(target);
+  };
+  const clearMountTarget = () => {
+    messageRenderer.setMountTarget(null);
+    toolCardRenderer.setMountTarget(null);
+  };
+
+  function renderOne(entry, trackLatestUsage) {
     const msg = entry.message;
-
     if (msg.role === 'user') {
-      const content =
-        typeof msg.content === 'string'
-          ? msg.content
-          : (msg.content || [])
-              .filter((b) => b.type === 'text')
-              .map((b) => b.text)
-              .join('\n');
-      // Extract images from content blocks
-      const images = Array.isArray(msg.content)
+      const content = typeof msg.content === 'string'
         ? msg.content
-            .filter((b) => b.type === 'image')
-            .map((b) => ({ data: b.source?.data || b.data || '', mimeType: b.source?.media_type || b.media_type || 'image/png' }))
+        : (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      const images = Array.isArray(msg.content)
+        ? msg.content.filter((b) => b.type === 'image').map((b) => ({
+            data: b.source?.data || b.data || '',
+            mimeType: b.source?.media_type || b.media_type || 'image/png',
+          }))
         : [];
       if (content || images.length > 0) {
         userCount++;
         messageRenderer.renderUserMessage({ content: content || '', images: images.length > 0 ? images : undefined }, true);
       }
-    } else if (msg.role === 'assistant') {
-      const textBlocks = (msg.content || []).filter((b) => b.type === 'text');
-      const thinkingBlocks = (msg.content || []).filter((b) => b.type === 'thinking');
-      const toolCalls = (msg.content || []).filter((b) => b.type === 'toolCall');
+      return;
+    }
 
-      // Build content blocks for rendering
-      const contentBlocks = [];
-      for (const block of msg.content || []) {
-        if (block.type === 'text' || block.type === 'thinking') {
-          contentBlocks.push(block);
-        }
-      }
-
+    if (msg.role === 'assistant') {
+      const content = Array.isArray(msg.content) ? msg.content : [];
+      const textBlocks = content.filter((b) => b.type === 'text');
+      const thinkingBlocks = content.filter((b) => b.type === 'thinking');
+      const toolCalls = content.filter((b) => b.type === 'toolCall');
+      const contentBlocks = content.filter((b) => b.type === 'text' || b.type === 'thinking');
       const text = textBlocks.map((b) => b.text).join('\n');
 
       if (msg.stopReason === 'error' && msg.errorMessage) {
         assistantCount++;
         if (text || thinkingBlocks.length > 0) {
-          messageRenderer.renderAssistantMessage(
-            {
-              content: contentBlocks.length > 0 ? contentBlocks : text,
-              usage: msg.usage,
-            },
-            false,
-            true
-          );
+          messageRenderer.renderAssistantMessage({ content: contentBlocks.length > 0 ? contentBlocks : text, usage: msg.usage }, false, true);
         }
-        messageRenderer.renderError(humanizeModelError(msg.errorMessage));
+        messageRenderer.renderError(humanizeModelError(msg.errorMessage), true);
       } else if (text || thinkingBlocks.length > 0) {
         assistantCount++;
-        messageRenderer.renderAssistantMessage(
-          {
-            content: contentBlocks.length > 0 ? contentBlocks : text,
-            usage: msg.usage,
-          },
-          false,
-          true
-        );
-
-        // Track cost and tokens from history
-        if (msg.usage?.cost?.total) {
-          sessionTotalCost += msg.usage.cost.total;
-        }
-        if (msg.usage?.input) {
-          lastInputTokens = msg.usage.input + (msg.usage.cacheRead || 0);
-          lastUsage = msg.usage;
-        }
+        messageRenderer.renderAssistantMessage({ content: contentBlocks.length > 0 ? contentBlocks : text, usage: msg.usage }, false, true);
       }
 
-      // Show tool calls as compact history cards
       for (const tc of toolCalls) {
         toolCardCount++;
-        toolCardRenderer.createHistoryCard({
-          toolCallId: tc.id,
-          toolName: tc.name,
-          args: tc.arguments || {},
-        });
+        toolCardRenderer.createHistoryCard({ toolCallId: tc.id, toolName: tc.name, args: tc.arguments || {} });
       }
-    } else if (msg.role === 'toolResult') {
+      return;
+    }
+
+    if (msg.role === 'toolResult') {
       toolResultCount++;
-      toolCardRenderer.addHistoryResult(
-        msg.toolCallId,
-        { content: msg.content || [] },
-        msg.isError
-      );
+      toolCardRenderer.addHistoryResult(msg.toolCallId, { content: msg.content || [] }, msg.isError);
     }
   }
 
-  function finishRender() {
-    console.log(`[History] Done: ${userCount} users, ${assistantCount} assistants, ${toolCardCount} tools, ${toolResultCount} results`);
+  function processRange(start, end, target, config, done) {
+    let index = start;
+    const background = !!config.background;
+    const budget = background ? 5 : 7;
+    function batch() {
+      if (myGeneration !== renderGeneration) {
+        clearMountTarget();
+        return;
+      }
+      const deadline = performance.now() + budget;
+      setMountTarget(target);
+      while (index < end) {
+        renderOne(messages[index], !!config.trackLatestUsage);
+        index++;
+        if (performance.now() >= deadline) break;
+      }
+      clearMountTarget();
+      if (index < end) scheduleHistoryWork(batch, background);
+      else done();
+    }
+    batch();
+  }
+
+  function updateSummary() {
     updateCostDisplay();
     updateTokenUsage();
-    if (!availableModels.length) fetchModelInfo();
-    else applyContextWindow(getCurrentModel());
+  }
 
-    // Batch-process deferred KaTeX math so it doesn't block the initial render.
-    messageRenderer.flushPendingMath();
-
-    // Jump to bottom instantly (no smooth scroll animation)
-    const messagesEl = document.getElementById('messages');
-    messagesEl.style.scrollBehavior = 'auto';
+  function insertBeforePreservingPosition(fragment, beforeNode) {
+    const anchor = beforeNode || messagesContainer.firstChild;
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    const previousAnchorMode = messagesContainer.style.overflowAnchor;
+    messagesContainer.style.overflowAnchor = 'none';
+    messagesContainer.insertBefore(fragment, anchor || null);
+    if (anchor && Number.isFinite(anchorTop)) {
+      messagesContainer.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
     requestAnimationFrame(() => {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-      // Restore smooth scrolling after a frame
-      requestAnimationFrame(() => {
-        messagesEl.style.scrollBehavior = '';
-      });
+      messagesContainer.style.overflowAnchor = previousAnchorMode;
     });
   }
 
-  function renderBatch() {
-    if (myGeneration !== renderGeneration) {
-      console.log('[History] Render cancelled (superseded by newer sync)');
-      return;
-    }
-    // Time-sliced rendering: render items until we exceed ~8ms, then yield
-    // so the browser can paint and the UI stays responsive. We always render
-    // at least one item per batch to guarantee progress even if a single
-    // heavy message exceeds the budget.
-    const deadline = performance.now() + 8;
-    let rendered = 0;
-    while (index < messages.length) {
-      renderOne(messages[index]);
-      index++;
-      rendered++;
-      // After at least one item, check the clock before continuing
-      if (rendered > 0 && performance.now() >= deadline) break;
-    }
-    if (index < messages.length) {
-      // Use requestAnimationFrame to yield a full frame for the browser to paint
-      requestAnimationFrame(() => setTimeout(renderBatch, 4));
-    } else {
-      finishRender();
-    }
+  function complete() {
+    updateSummary();
+    messageRenderer.flushPendingMath();
+    options.onDone?.();
+    console.log(`[History] Done: ${userCount} users, ${assistantCount} assistants, ${toolCardCount} tools, ${toolResultCount} results`);
   }
 
   if (messages.length === 0) {
-    finishRender();
+    options.onReady?.();
+    complete();
     return;
   }
-  renderBatch();
+
+  if (prepend) {
+    const fragment = document.createDocumentFragment();
+    processRange(0, messages.length, fragment, { background: true, trackLatestUsage: false }, () => {
+      if (myGeneration !== renderGeneration) return;
+      insertBeforePreservingPosition(fragment, options.beforeNode || messagesContainer.firstChild);
+      options.onReady?.();
+      complete();
+    });
+    return;
+  }
+
+  const tailStart = Math.max(0, messages.length - HISTORY_VISIBLE_TAIL);
+  if (deferOlder && tailStart > 0) {
+    historyBufferedEntries = messages.slice(0, tailStart);
+  }
+  const tailFragment = document.createDocumentFragment();
+  processRange(tailStart, messages.length, tailFragment, { background: false, trackLatestUsage: true }, () => {
+    if (myGeneration !== renderGeneration) return;
+    const tailAnchor = tailFragment.firstChild;
+    messagesContainer.appendChild(tailFragment);
+    jumpMessagesToBottom();
+    updateSummary();
+    options.onReady?.();
+    messageRenderer.flushPendingMath();
+
+    if (tailStart === 0 || deferOlder) {
+      complete();
+      return;
+    }
+
+    const olderFragment = document.createDocumentFragment();
+    processRange(0, tailStart, olderFragment, { background: true, trackLatestUsage: false }, () => {
+      if (myGeneration !== renderGeneration) return;
+      insertBeforePreservingPosition(olderFragment, tailAnchor);
+      complete();
+    });
+  });
 }
 
 // ═══════════════════════════════════════

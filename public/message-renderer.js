@@ -44,6 +44,11 @@ function findStableMarkdownEnd(src) {
   return lastSafe > 0 && lastSafe < src.length ? lastSafe : 0;
 }
 
+function hasMathDelimiters(text) {
+  const src = String(text || '');
+  return /\$\$[\s\S]+?\$\$|\$(?!\s)(?:\\.|[^$\n])+\$/.test(src);
+}
+
 let katexLoader = null;
 function loadKatex() {
   if (typeof renderMathInElement === 'function') return Promise.resolve();
@@ -86,24 +91,43 @@ export class MessageRenderer {
     this.container = container;
     this.isNearBottom = true;
     this._thinkingTimers = new Map();
-    this._scrollPending = false;
+    this._lazyThinking = new Map();
+    this._bottomScrollFrame = null;
+    this._mountTarget = null;
 
-    this.container.addEventListener('scroll', () => {
-      if (this._scrollPending) return;
-      this._scrollPending = true;
-      requestAnimationFrame(() => {
-        this._scrollPending = false;
-        const threshold = 100;
-        this.isNearBottom =
-          this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
-      });
-    }, { passive: true });
+    this.container.addEventListener('click', (event) => {
+      const toggle = event.target.closest?.('.thinking-toggle[data-lazy-thinking]');
+      if (!toggle) return;
+      const id = toggle.dataset.lazyThinking;
+      const content = id ? document.getElementById(id) : null;
+      if (!content) return;
+      const expanded = !content.classList.contains('expanded');
+      if (expanded && this._lazyThinking.has(id)) {
+        content.textContent = this._lazyThinking.get(id) || '';
+        this._lazyThinking.delete(id);
+      }
+      content.classList.toggle('expanded', expanded);
+      toggle.classList.toggle('expanded', expanded);
+      toggle.setAttribute('aria-expanded', String(expanded));
+    });
   }
 
   clear() {
     for (const timer of this._thinkingTimers.values()) clearInterval(timer);
     this._thinkingTimers.clear();
-    this.container.innerHTML = '';
+    this._lazyThinking.clear();
+    if (this._bottomScrollFrame !== null) cancelAnimationFrame(this._bottomScrollFrame);
+    this._bottomScrollFrame = null;
+    this._mountTarget = null;
+    this.container.replaceChildren();
+  }
+
+  setMountTarget(target = null) {
+    this._mountTarget = target;
+  }
+
+  _append(node) {
+    (this._mountTarget || this.container).appendChild(node);
   }
 
   /**
@@ -167,9 +191,9 @@ export class MessageRenderer {
       <button class="message-copy-btn" aria-label="复制消息"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     `;
     this._setupCopyBtn(div);
-    this.container.appendChild(div);
+    this._append(div);
     if (isHistory) {
-      div.dataset.pendingMath = '1';
+      if (hasMathDelimiters(message.content)) div.dataset.pendingMath = '1';
     } else {
       this._renderMath(div);
       this.scrollToBottom();
@@ -187,15 +211,18 @@ export class MessageRenderer {
 
     let contentHtml = '';
     let usageHtml = '';
+    let hasMath = false;
 
     if (typeof message.content === 'string') {
+      hasMath = hasMathDelimiters(message.content);
       contentHtml = isStreaming ? this.escapeHtml(message.content) : renderMarkdown(message.content);
     } else if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block.type === 'text') {
+          hasMath ||= hasMathDelimiters(block.text);
           contentHtml += isStreaming ? this.escapeHtml(block.text) : renderMarkdown(block.text);
         } else if (block.type === 'thinking') {
-          contentHtml += this.renderThinkingBlock(block.thinking);
+          contentHtml += this.renderThinkingBlock(block.thinking, isHistory);
         }
       }
     }
@@ -219,13 +246,12 @@ export class MessageRenderer {
     if (!isStreaming) {
       this._setupCopyBtn(div);
     }
-    this.container.appendChild(div);
-    // Defer heavy KaTeX math rendering for history messages — it gets batched
-    // after all DOM nodes are built (see flushPendingMath), avoiding per-message
-    // layout thrash during initial history load.
+    this._append(div);
+    // Defer KaTeX for history, and only mark messages that actually contain
+    // math delimiters. Scanning every message in a long session is expensive.
     if (!isStreaming) {
       if (isHistory) {
-        div.dataset.pendingMath = '1';
+        if (hasMath) div.dataset.pendingMath = '1';
       } else {
         this._renderMath(div);
       }
@@ -235,14 +261,15 @@ export class MessageRenderer {
     return div;
   }
 
-  renderThinkingBlock(thinking) {
+  renderThinkingBlock(thinking, lazy = false) {
     const id = 'thinking-' + Math.random().toString(36).slice(2, 8);
+    if (lazy) this._lazyThinking.set(id, String(thinking || ''));
     return `<div class="thinking-block">
-<div class="thinking-toggle" onclick="var c=document.getElementById('${id}');c.classList.toggle('expanded');this.classList.toggle('expanded')">
+<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false"${lazy ? ` data-lazy-thinking="${id}"` : ` onclick="var c=document.getElementById('${id}');c.classList.toggle('expanded');this.classList.toggle('expanded');this.setAttribute('aria-expanded',String(c.classList.contains('expanded')))"`}>
 <span class="chevron"><svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3z"/></svg></span>
 <span class="thinking-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M12 5v13"/><path d="M6.5 9h11"/><path d="M7 13h10"/></svg> 思考过程</span>
 </div>
-<div class="thinking-content" id="${id}">${this.escapeHtml(thinking)}</div>
+<div class="thinking-content" id="${id}">${lazy ? '' : this.escapeHtml(thinking)}</div>
 </div>`;
   }
 
@@ -412,11 +439,11 @@ export class MessageRenderer {
     const div = document.createElement('div');
     div.className = 'system-message';
     div.textContent = text;
-    this.container.appendChild(div);
+    this._append(div);
     this.scrollToBottom();
   }
 
-  renderError(errorMessage) {
+  renderError(errorMessage, isHistory = false) {
     const welcome = this.container.querySelector('.welcome');
     if (welcome) welcome.remove();
     const div = document.createElement('div');
@@ -432,8 +459,8 @@ export class MessageRenderer {
     hint.className = 'error-message-hint';
     hint.textContent = t('errHint');
     div.append(title, body, hint);
-    this.container.appendChild(div);
-    this.scrollToBottom();
+    this._append(div);
+    if (!isHistory) this.scrollToBottom();
   }
 
   _setupCopyBtn(messageEl) {
@@ -471,11 +498,11 @@ export class MessageRenderer {
   }
 
   scrollToBottom() {
-    if (this.isNearBottom) {
-      requestAnimationFrame(() => {
-        this.container.scrollTop = this.container.scrollHeight;
-      });
-    }
+    if (!this.isNearBottom || this._bottomScrollFrame !== null) return;
+    this._bottomScrollFrame = requestAnimationFrame(() => {
+      this._bottomScrollFrame = null;
+      this.container.scrollTop = this.container.scrollHeight;
+    });
   }
 
   /**
@@ -484,8 +511,8 @@ export class MessageRenderer {
    * Uses setTimeout(0) chunks so the UI thread stays responsive while math
    * is processed across many messages.
    */
-  flushPendingMath() {
-    const pending = this.container.querySelectorAll('[data-pending-math="1"]');
+  flushPendingMath(root = this.container) {
+    const pending = root.querySelectorAll('[data-pending-math="1"]');
     if (pending.length === 0) return;
     loadKatex().then(() => {
       let i = 0;

@@ -6,6 +6,16 @@ export class ToolCardRenderer {
   constructor(container) {
     this.container = container;
     this.toolCards = new Map(); // toolCallId -> element
+    this._pendingHistoryResults = new Map();
+    this._mountTarget = null;
+  }
+
+  setMountTarget(target = null) {
+    this._mountTarget = target;
+  }
+
+  _append(node) {
+    (this._mountTarget || this.container).appendChild(node);
   }
 
   createToolCard(toolExecution) {
@@ -48,7 +58,7 @@ export class ToolCardRenderer {
       body.insertBefore(diffEl, body.firstChild);
     }
 
-    this.container.appendChild(card);
+    this._append(card);
     this.toolCards.set(toolCallId, card);
     this.scrollToBottom();
 
@@ -79,8 +89,16 @@ export class ToolCardRenderer {
 
     // Update output
     const outputElement = card.querySelector('.tool-output');
-    if (outputElement && toolExecution.output) {
-      outputElement.textContent = toolExecution.output;
+    if (outputElement && typeof toolExecution.output === 'string') {
+      const next = toolExecution.output;
+      const previous = outputElement._rawText || '';
+      if (next.startsWith(previous)) {
+        const delta = next.slice(previous.length);
+        if (delta) outputElement.appendChild(document.createTextNode(delta));
+      } else if (next !== previous) {
+        outputElement.textContent = next;
+      }
+      outputElement._rawText = next;
       this.scrollToBottom();
     }
   }
@@ -102,6 +120,7 @@ export class ToolCardRenderer {
     if (outputElement && result) {
       const output = this.formatResult(result);
       outputElement.textContent = output;
+      outputElement._rawText = output;
     }
 
     // Collapse completed cards (less noise)
@@ -161,8 +180,8 @@ export class ToolCardRenderer {
     copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const output = card.querySelector('.tool-output');
-      if (!output || !output.textContent.trim()) return;
-      const text = output._fullText || output.textContent;
+      const text = output?.textContent || this.formatResult(card._historyResultRaw);
+      if (!text.trim()) return;
       (navigator.clipboard ? navigator.clipboard.writeText(text) : new Promise((r) => {
         const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
         document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); r();
@@ -180,27 +199,73 @@ export class ToolCardRenderer {
 
     header.appendChild(headerRight);
 
-    // Toggle expand on click
+    // Toggle expand on click. Build the expensive body only when the user
+    // actually opens this collapsed history card.
     header.addEventListener('click', () => {
-      body.classList.toggle('expanded');
-      chevron.classList.toggle('expanded');
-      // Restore full output on first expand if it was truncated
-      if (body.classList.contains('expanded')) {
-        const output = body.querySelector('.tool-output');
-        if (output && output._fullText) {
-          output.textContent = output._fullText;
-          delete output._fullText;
-        }
-      }
+      const expanded = !body.classList.contains('expanded');
+      if (expanded) this._materializeHistoryCard(card);
+      body.classList.toggle('expanded', expanded);
+      chevron.classList.toggle('expanded', expanded);
     });
 
     card.appendChild(header);
 
-    // Body (collapsed by default)
+    // Body stays empty while collapsed. Args, edit diffs and large outputs
+    // are materialized lazily on first expansion.
     const body = document.createElement('div');
     body.className = 'tool-card-body';
+    card._historyArgs = args || {};
+    card._historyToolName = toolName;
+    card._historyResultRaw = null;
+    card._historyMaterialized = false;
 
-    const isEdit = (toolName === 'edit' || toolName === 'Edit') && args && (args.oldText || args.old_text) && (args.newText || args.new_text);
+    card.appendChild(body);
+
+    this._append(card);
+    this.toolCards.set(toolCallId, card);
+    const pending = this._pendingHistoryResults.get(toolCallId);
+    if (pending) {
+      this._pendingHistoryResults.delete(toolCallId);
+      this.addHistoryResult(toolCallId, pending.result, pending.isError);
+    }
+
+    return card;
+  }
+
+  /**
+   * Add result to a history card (stays collapsed)
+   */
+  addHistoryResult(toolCallId, result, isError) {
+    const card = this.toolCards.get(toolCallId);
+    if (!card) {
+      this._pendingHistoryResults.set(toolCallId, { result, isError });
+      return;
+    }
+
+    if (isError) {
+      const statusEl = card.querySelector('.tool-status');
+      if (statusEl) {
+        statusEl.className = 'tool-status error';
+        statusEl.textContent = this.getStatusLabel('error');
+      }
+    }
+
+    card._historyResultRaw = result || null;
+    if (card._historyMaterialized) {
+      const outputElement = card.querySelector('.tool-output');
+      if (outputElement) outputElement.textContent = this.formatResult(result);
+      card._historyResultRaw = null;
+    }
+  }
+
+  _materializeHistoryCard(card) {
+    if (!card || card._historyMaterialized !== false) return;
+    const body = card.querySelector('.tool-card-body');
+    if (!body) return;
+    const args = card._historyArgs || {};
+    const toolName = card._historyToolName || '';
+    const isEdit = (toolName === 'edit' || toolName === 'Edit') &&
+      (args.oldText || args.old_text) && (args.newText || args.new_text);
 
     if (isEdit) {
       body.appendChild(this.renderDiff(args.oldText || args.old_text, args.newText || args.new_text));
@@ -214,46 +279,12 @@ export class ToolCardRenderer {
       }
     }
 
-    const outputEl = document.createElement('div');
-    outputEl.className = 'tool-output';
-    body.appendChild(outputEl);
-
-    card.appendChild(body);
-
-    this.container.appendChild(card);
-    this.toolCards.set(toolCallId, card);
-
-    return card;
-  }
-
-  /**
-   * Add result to a history card (stays collapsed)
-   */
-  addHistoryResult(toolCallId, result, isError) {
-    const card = this.toolCards.get(toolCallId);
-    if (!card) return;
-
-    if (isError) {
-      const statusEl = card.querySelector('.tool-status');
-      if (statusEl) {
-        statusEl.className = 'tool-status error';
-        statusEl.textContent = this.getStatusLabel('error');
-      }
-    }
-
-    const outputElement = card.querySelector('.tool-output');
-    if (outputElement && result) {
-      const fullText = this.formatResult(result);
-      const MAX_HISTORY_OUTPUT = 8000;
-      if (fullText.length > MAX_HISTORY_OUTPUT) {
-        outputElement.textContent = fullText.slice(0, MAX_HISTORY_OUTPUT)
-          + `\n\n… (${Math.round(fullText.length / 1000)}k 字符，展开后查看完整内容)`;
-        // Lazily store reference for copy/expand — avoid bloating DOM attribute
-        outputElement._fullText = fullText;
-      } else {
-        outputElement.textContent = fullText;
-      }
-    }
+    const output = document.createElement('div');
+    output.className = 'tool-output';
+    output.textContent = this.formatResult(card._historyResultRaw);
+    body.appendChild(output);
+    card._historyResultRaw = null;
+    card._historyMaterialized = true;
   }
 
   getStatusLabel(status) {
@@ -342,20 +373,17 @@ export class ToolCardRenderer {
   }
 
   scrollToBottom() {
-    if (this.container) {
-      const threshold = 100;
-      const isNear =
-        this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
-      if (isNear) {
-        requestAnimationFrame(() => {
-          this.container.scrollTop = this.container.scrollHeight;
-        });
-      }
-    }
+    if (!this.container || !this._scrollCallback) return;
+    this._scrollCallback();
+  }
+
+  setScrollCallback(callback) {
+    this._scrollCallback = callback;
   }
 
   expandAll() {
     this.toolCards.forEach(card => {
+      this._materializeHistoryCard(card);
       card.querySelector('.tool-card-body')?.classList.add('expanded');
       card.querySelector('.tool-card-chevron')?.classList.add('expanded');
     });
@@ -371,5 +399,7 @@ export class ToolCardRenderer {
   clear() {
     this.toolCards.forEach((card) => card.remove());
     this.toolCards.clear();
+    this._pendingHistoryResults.clear();
+    this._mountTarget = null;
   }
 }

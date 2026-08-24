@@ -1285,7 +1285,7 @@ export default function (pi: ExtensionAPI) {
     // tens of MB over WebSocket, which freezes both the server (JSON.stringify)
     // and the browser (JSON.parse + DOM rendering).
     let entries = ctx.sessionManager.getEntries();
-    const MAX_SYNC_ENTRIES = 200;
+    const MAX_SYNC_ENTRIES = 80;
     if (entries.length > MAX_SYNC_ENTRIES) {
       entries = entries.slice(-MAX_SYNC_ENTRIES);
     }
@@ -2264,9 +2264,20 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     // Session file endpoint: /api/sessions/:dirName/:file
-    const sessionMatch = urlPath.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
+    const sessionUrl = new URL(`http://localhost${req.url || urlPath}`);
+    const sessionMatch = sessionUrl.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
     if (sessionMatch && req.method === "GET") {
-      serveSessionFile(res, sessionMatch[1], sessionMatch[2]);
+      const beforeRaw = sessionUrl.searchParams.get("before");
+      const limitRaw = sessionUrl.searchParams.get("limit");
+      const before = beforeRaw === null ? undefined : Number(beforeRaw);
+      const limit = Math.max(20, Math.min(200, Number(limitRaw) || 120));
+      serveSessionFilePage(
+        res,
+        decodeURIComponent(sessionMatch[1]),
+        decodeURIComponent(sessionMatch[2]),
+        Number.isFinite(before) ? before : undefined,
+        limit,
+      );
       return;
     }
 
@@ -2521,45 +2532,96 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
   }
 
-  // ═══════════════════════════════════════
-  // Session file endpoint
-  // ═══════════════════════════════════════
-  function serveSessionFile(res: http.ServerResponse, dirName: string, file: string) {
-    const filePath = path.join(SESSIONS_DIR, dirName, file);
+  // Session history is read backwards in pages. This keeps a long JSONL file
+  // from being fully parsed + serialized on the server and fully JSON.parsed
+  // by the browser before the newest messages become usable.
+  function serveSessionFilePage(
+    res: http.ServerResponse,
+    dirName: string,
+    file: string,
+    before: number | undefined,
+    limit: number,
+  ) {
+    const candidate = path.join(SESSIONS_DIR, dirName, file);
+    const filePath = resolveAllowedSessionPath(candidate);
 
-    if (!fs.existsSync(filePath)) {
+    if (!filePath) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Session not found" }));
       return;
     }
 
-    const entries: any[] = [];
-    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-    let buffer = "";
+    let fd: number | null = null;
+    try {
+      const stat = fs.statSync(filePath);
+      const end = Math.max(0, Math.min(stat.size, before ?? stat.size));
+      const blockSize = 64 * 1024;
+      let pos = end;
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      let newlineCount = 0;
+      fd = fs.openSync(filePath, "r");
 
-    stream.on("data", (chunk: string) => {
-      buffer += chunk;
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (line.trim()) {
-          try { entries.push(JSON.parse(line)); } catch { /* skip */ }
+      // One extra newline is needed because the first line in a backwards-read
+      // buffer may be partial. Single huge JSONL entries are still supported.
+      while (pos > 0 && newlineCount < limit + 1) {
+        const size = Math.min(blockSize, pos);
+        pos -= size;
+        const chunk = Buffer.allocUnsafe(size);
+        fs.readSync(fd, chunk, 0, size, pos);
+        for (let i = 0; i < chunk.length; i++) {
+          if (chunk[i] === 10) newlineCount++;
         }
+        chunks.unshift(chunk);
+        totalBytes += chunk.length;
       }
-    });
+      const data = Buffer.concat(chunks, totalBytes);
 
-    stream.on("end", () => {
-      if (buffer.trim()) {
-        try { entries.push(JSON.parse(buffer)); } catch { /* skip */ }
+      const lines: Array<{ start: number; text: string }> = [];
+      let startsAtLineBoundary = pos === 0;
+      if (!startsAtLineBoundary && pos > 0) {
+        const previous = Buffer.allocUnsafe(1);
+        fs.readSync(fd, previous, 0, 1, pos - 1);
+        startsAtLineBoundary = previous[0] === 10;
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ entries }));
-    });
+      let lineStart = 0;
+      for (let i = 0; i <= data.length; i++) {
+        const atEnd = i === data.length;
+        if (!atEnd && data[i] !== 10) continue;
+        // If the buffer starts in the middle of a line, discard that fragment.
+        const partialAtStart = !startsAtLineBoundary && lineStart === 0;
+        const hasBytes = i > lineStart;
+        if (!partialAtStart && hasBytes) {
+          const text = data.subarray(lineStart, i).toString("utf8").replace(/\r$/, "");
+          if (text.trim()) lines.push({ start: pos + lineStart, text });
+        }
+        lineStart = i + 1;
+      }
 
-    stream.on("error", (e: Error) => {
+      const selected = lines.slice(-limit);
+      const entries: any[] = [];
+      for (const line of selected) {
+        try { entries.push(JSON.parse(line.text)); } catch {}
+      }
+      const cursor = selected.length > 0 ? selected[0].start : 0;
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({
+        entries,
+        cursor,
+        hasMore: cursor > 0,
+        fileSize: stat.size,
+      }));
+    } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: e.message }));
-    });
+      res.end(JSON.stringify({ error: e?.message || "history_read_failed" }));
+    } finally {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch {}
+      }
+    }
   }
 
   // ═══════════════════════════════════════
