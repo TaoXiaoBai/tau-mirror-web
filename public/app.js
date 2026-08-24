@@ -1940,26 +1940,7 @@ sidebarOverlay.addEventListener('click', () => {
 
 
 const newSessionBtn = document.getElementById('new-session-btn');
-newSessionBtn.addEventListener('click', () => {
-  renderGeneration++;
-  historyPageState = null;
-  historyBufferedEntries = [];
-  historyBufferedLoading = false;
-  if (historyPageAbort) historyPageAbort.abort();
-  historyPageAbort = null;
-  historyPreviewSessionFile = null;
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
-  updateCostDisplay();
-  updateTokenUsage();
-  state.reset();
-  messageRenderer.clear();
-  toolCardRenderer.clear();
-  messageRenderer.renderWelcome();
-  sidebar.clearActive();
-  viewingActiveSession = true;
-  updateMirrorInputState();
-});
+newSessionBtn.addEventListener('click', newSession);
 
 refreshSessionsBtn.addEventListener('click', () => {
   if (isMobile()) {
@@ -2018,17 +1999,42 @@ sessionSearchInput.addEventListener('input', () => {
 });
 
 async function newSession() {
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
-  updateCostDisplay();
-  updateTokenUsage();
-  await switchSession(null);
-  sidebar.clearActive();
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
+  if (newSessionBtn.disabled) return;
+  newSessionBtn.disabled = true;
+  newSessionBtn.setAttribute('aria-busy', 'true');
+  try {
+    const result = await rpcCommand({ type: 'new_session' }, t('newSessionWorking'));
+    if (!result?.success) return;
+
+    renderGeneration++;
+    historyPageState = null;
+    historyBufferedEntries = [];
+    historyBufferedLoading = false;
+    if (historyPageAbort) historyPageAbort.abort();
+    historyPageAbort = null;
+    historyPreviewSessionFile = null;
+    sessionTotalCost = 0;
+    lastInputTokens = 0;
+    lastUsage = null;
+    state.reset();
+    messageRenderer.clear();
+    toolCardRenderer.clear();
+    messageRenderer.renderWelcome();
+    sidebar.clearActive();
+    viewingActiveSession = true;
+    updateMirrorInputState();
+    updateCostDisplay();
+    updateTokenUsage();
+    showToast(t('newSessionOk'), 'success', 2400);
+    if (isMobile()) {
+      sidebarEl.classList.add('collapsed');
+      sidebarOverlay.classList.remove('visible');
+    }
+    if (!isMobile()) messageInput.focus();
+  } finally {
+    newSessionBtn.disabled = false;
+    newSessionBtn.removeAttribute('aria-busy');
   }
-  if (!isMobile()) messageInput.focus();
 }
 
 async function handleSessionSelect(session, project) {

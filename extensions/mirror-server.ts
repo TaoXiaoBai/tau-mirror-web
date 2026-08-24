@@ -471,6 +471,14 @@ export default function (pi: ExtensionAPI) {
     return { name, live };
   }
 
+  pi.registerCommand("tau-new", {
+    description: "Create a new Pi session selected from Tau",
+    handler: async (_args, ctx) => {
+      await ctx.waitForIdle();
+      await ctx.newSession();
+    },
+  });
+
   // Session replacement is available only on a command context. The browser
   // asks the event context to queue this command, then reconnects after Pi has
   // rebound the selected historical session.
@@ -1497,6 +1505,23 @@ export default function (pi: ExtensionAPI) {
           }
           const entries = ctx.sessionManager.getEntries();
           sendTo(ws, success("get_messages", { entries }));
+          break;
+        }
+
+        case "new_session": {
+          if (!ctx) {
+            sendTo(ws, error("new_session", "No context available"));
+            break;
+          }
+          if (!ctx.isIdle()) {
+            sendTo(ws, error("new_session", "Pi is busy; wait until the current response finishes"));
+            break;
+          }
+          // Acknowledge before ctx.newSession() shuts down this extension and
+          // closes the current WebSocket. The command supplies the required
+          // command-capable context without creating a user-visible message.
+          sendTo(ws, success("new_session", { switching: true }));
+          pi.sendUserMessage("/tau-new", { expandPromptTemplates: true });
           break;
         }
 
