@@ -3396,7 +3396,7 @@ body.hide-thinking .thinking-block { display: none !important; }
 
 .scroll-bottom-btn {
   position: absolute;
-  bottom: 90px;
+  bottom: calc(var(--input-dock-height, 78px) + 12px);
   right: 24px;
   width: 36px;
   height: 36px;
@@ -3409,7 +3409,7 @@ body.hide-thinking .thinking-block { display: none !important; }
   align-items: center;
   justify-content: center;
   z-index: 20;
-  transition: all 0.25s var(--ease), opacity 0.2s var(--ease), transform 0.2s var(--ease);
+  transition: bottom 0.18s var(--ease), background 0.25s var(--ease), border-color 0.25s var(--ease), color 0.25s var(--ease), box-shadow 0.25s var(--ease), opacity 0.2s var(--ease), transform 0.2s var(--ease);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);

@@ -1202,7 +1202,7 @@ textarea {
 .toast-region {
   position: fixed;
   right: 18px;
-  bottom: 92px;
+  bottom: calc(var(--input-dock-height, 78px) + 14px);
   z-index: 4000;
   display: flex;
   flex-direction: column;
@@ -1488,7 +1488,7 @@ textarea {
 
   .toast-region {
     right: 9px;
-    bottom: 82px;
+    bottom: calc(var(--input-dock-height, 70px) + 10px);
     max-width: calc(100vw - 18px);
   }
 

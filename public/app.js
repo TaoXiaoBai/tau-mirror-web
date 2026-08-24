@@ -55,6 +55,8 @@ const tokenUsageEl = document.getElementById('token-usage');
 const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 const scrollBottomBadge = document.getElementById('scroll-bottom-badge');
 const messagesContainer = document.getElementById('messages');
+const mainContainer = messagesContainer?.closest('.main');
+const inputAreaEl = document.querySelector('.input-area');
 const toastRegion = document.getElementById('toast-region');
 applyDomTranslations();
 const langSelect = document.getElementById('lang-select');
@@ -117,6 +119,18 @@ let historyBufferedLoading = false;
 let isMirrorMode = false; // Set when mirror_sync received
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 let connectionState = 'connecting';
+
+function updateInputDockHeight() {
+  if (!mainContainer || !inputAreaEl) return;
+  const height = Math.ceil(inputAreaEl.getBoundingClientRect().height);
+  mainContainer.style.setProperty('--input-dock-height', `${Math.max(0, height)}px`);
+}
+
+if (inputAreaEl && typeof ResizeObserver === 'function') {
+  const inputDockObserver = new ResizeObserver(() => updateInputDockHeight());
+  inputDockObserver.observe(inputAreaEl);
+}
+requestAnimationFrame(updateInputDockHeight);
 
 function sessionPageLocation(filePath) {
   const parts = String(filePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
@@ -1051,6 +1065,7 @@ function renderQueuedMessages() {
   queuedMessagesEl.innerHTML = '';
   if (messageQueue.length === 0) {
     queuedMessagesEl.classList.add('hidden');
+    requestAnimationFrame(updateInputDockHeight);
     return;
   }
   queuedMessagesEl.classList.remove('hidden');
@@ -1068,6 +1083,7 @@ function renderQueuedMessages() {
     });
     queuedMessagesEl.appendChild(el);
   });
+  requestAnimationFrame(updateInputDockHeight);
 }
 
 function escapeHtml(text) {
