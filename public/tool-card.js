@@ -66,6 +66,7 @@ export class ToolCardRenderer {
   }
 
   updateToolCard(toolExecution) {
+    if (!toolExecution?.toolCallId) return;
     let card = this.toolCards.get(toolExecution.toolCallId);
 
     if (!card) {

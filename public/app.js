@@ -810,9 +810,25 @@ function handleToolExecutionStart(event) {
 }
 
 function applyToolExecutionUpdate(toolCallId, partialResult) {
+  if (!toolCallId) return;
   const output = formatToolOutput(partialResult);
-  state.updateToolExecution(toolCallId, { status: 'streaming', output });
-  toolCardRenderer.updateToolCard(state.getToolExecution(toolCallId));
+  let tool = state.getToolExecution(toolCallId);
+  // A slow/background tab may legitimately miss the start frame, or reconnect
+  // while a tool is already streaming. Reconstruct a minimal card instead of
+  // throwing and breaking all subsequent live updates.
+  if (!tool) {
+    state.addToolExecution(toolCallId, {
+      toolName: 'tool',
+      args: {},
+      status: 'streaming',
+      output,
+    });
+    tool = state.getToolExecution(toolCallId);
+  } else {
+    state.updateToolExecution(toolCallId, { status: 'streaming', output });
+    tool = state.getToolExecution(toolCallId);
+  }
+  if (tool) toolCardRenderer.updateToolCard(tool);
 }
 
 function flushToolExecutionUpdates() {
@@ -826,6 +842,7 @@ function flushToolExecutionUpdates() {
 
 function handleToolExecutionUpdate(event) {
   const { toolCallId, partialResult } = event;
+  if (!toolCallId) return;
   pendingToolUpdates.set(toolCallId, partialResult);
   if (toolUpdateFrame === null) {
     toolUpdateFrame = requestAnimationFrame(flushToolExecutionUpdates);
