@@ -450,6 +450,14 @@ wsClient.addEventListener('planModeState', (event) => {
   applyPlanModeState(event.detail);
 });
 
+wsClient.addEventListener('tokenSaverState', (event) => {
+  const data = event.detail || {};
+  tokenSaverEnabled = !!data.enabled;
+  if (data.thinkingLevel) currentThinkingLevel = data.thinkingLevel;
+  if (typeof updateTokenSaverBtn === 'function') updateTokenSaverBtn();
+  updateThinkingBtn();
+});
+
 wsClient.addEventListener('disconnected', () => {
   updateConnectionStatus('disconnected');
 });
@@ -1224,6 +1232,7 @@ let relayProviders = [];
 let relayBackendReady = false;
 let modelMenuNotice = null;
 let currentThinkingLevel = 'off';
+let tokenSaverEnabled = false;
 const BUILTIN_MODEL_PROVIDERS = new Set([
   'openai', 'anthropic', 'google', 'google-gemini', 'google-generative-ai',
   'google-vertex', 'amazon-bedrock', 'azure', 'azure-openai', 'groq',
@@ -2421,6 +2430,11 @@ function handleMirrorSync(data) {
     updateThinkingBtn();
   }
 
+  if (data.tokenSaverEnabled !== undefined) {
+    tokenSaverEnabled = !!data.tokenSaverEnabled;
+    if (typeof updateTokenSaverBtn === 'function') updateTokenSaverBtn();
+  }
+
   const entries = data.entries || [];
   const incomingSig = data.entrySig || entrySignature(entries[entries.length - 1]);
 
@@ -2460,7 +2474,7 @@ function handleMirrorSync(data) {
       hasMore: true,
       loading: false,
       bootstrap: true,
-      bootstrapLimit: 80,
+      bootstrapLimit: 1,
       generation: renderGeneration,
     };
   }
@@ -3020,7 +3034,13 @@ const themeGrid = document.getElementById('theme-grid');
 const toggleAutoCompact = document.getElementById('toggle-auto-compact');
 const btnThinkingLevel = document.getElementById('btn-thinking-level');
 const toggleShowThinking = document.getElementById('toggle-show-thinking');
+const tokenSaverBtn = document.getElementById('toggle-token-saver');
 
+function updateTokenSaverBtn() {
+  tokenSaverBtn.className = `settings-toggle${tokenSaverEnabled ? ' on' : ''}`;
+  tokenSaverBtn.title = t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff');
+}
+updateTokenSaverBtn();
 
 function buildThemeGrid() {
   themeGrid.innerHTML = '';
@@ -3058,8 +3078,12 @@ async function openSettings() {
     const data = await resp.json();
     if (data.success && data.data) {
       const s = data.data;
-      // Auto-compaction toggle
-      toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? ' on' : ''}`;
+      if (s.tokenSaverEnabled !== undefined) {
+        tokenSaverEnabled = !!s.tokenSaverEnabled;
+        localStorage.setItem('tau-token-saver', String(tokenSaverEnabled));
+        updateTokenSaverBtn();
+      }
+
       // Thinking level
       currentThinkingLevel = s.thinkingLevel || 'off';
       const level = THINKING_LEVELS().find(item => item.id === currentThinkingLevel) || THINKING_LEVELS()[0];
@@ -3092,6 +3116,20 @@ function closeSettings() {
 settingsBtn.addEventListener('click', () => openSettings());
 settingsClose.addEventListener('click', closeSettings);
 settingsOverlay.addEventListener('click', closeSettings);
+
+// Token saver is intentionally conservative: it does not rewrite prompts or
+// truncate history. It disables reasoning tokens and restores the previous level.
+tokenSaverBtn.addEventListener('click', async () => {
+  const result = await rpcCommand({ type: 'set_token_saver', enabled: !tokenSaverEnabled }, t('tokenSaverWorking'));
+  if (result?.success && result.data) {
+    tokenSaverEnabled = !!result.data.enabled;
+    localStorage.setItem('tau-token-saver', String(tokenSaverEnabled));
+    currentThinkingLevel = result.data.thinkingLevel || currentThinkingLevel;
+    updateTokenSaverBtn();
+    updateThinkingBtn();
+    showToast(t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff'), 'success', 2200);
+  }
+});
 
 // Auto-compaction toggle
 toggleAutoCompact.addEventListener('click', async () => {

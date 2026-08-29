@@ -83,16 +83,18 @@ export class SessionSidebar {
   async fullTextSearch(query) {
     // Don't search if query changed since debounce
     if (query !== this.searchQuery) return;
+    if (this._searchAbort) this._searchAbort.abort();
+    this._searchAbort = new AbortController();
 
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal: this._searchAbort.signal });
       const data = await res.json();
       if (query !== this.searchQuery) return; // stale
 
       this._searchResults = data.results || [];
       this.renderSearchResults();
     } catch (err) {
-      console.error('[Sidebar] Search failed:', err);
+      if (err?.name !== 'AbortError') console.error('[Sidebar] Search failed:', err);
     }
   }
 

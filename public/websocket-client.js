@@ -230,6 +230,10 @@ export class WebSocketClient extends EventTarget {
       case 'plan_mode_state':
         this.dispatchEvent(new CustomEvent('planModeState', { detail: message.data || message }));
         break;
+      case 'token_saver_state':
+        this.dispatchEvent(new CustomEvent('tokenSaverState', { detail: message.data || message }));
+        break;
+
       default:
         console.warn('[WS] Unknown message type:', message.type);
     }

@@ -1006,6 +1006,9 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  let tokenSaverEnabled = false;
+  let tokenSaverPreviousThinking = "medium";
+
   // Pending authoritative Plan Mode requests. The plan extension replies on the
   // shared event bus with the same requestId; Tau never guesses the next state.
   const pendingPlanRequests = new Map<string, (state: any) => void>();
@@ -1015,6 +1018,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   function sendTo(ws: WebSocket, data: any) {
     if (ws.readyState === WebSocket.OPEN) {
+      // Never drop command responses: callers are waiting for these IDs.
       ws.send(JSON.stringify(data));
     }
   }
@@ -1024,8 +1028,13 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   function broadcast(data: any) {
     const json = JSON.stringify(data);
+    const eventType = data?.type === "event" ? data.event?.type : data?.type;
+    const droppable = eventType === "message_update" || eventType === "tool_execution_update";
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
+        // Only intermediate streaming frames may be dropped for a slow tab.
+        // Lifecycle events and command/state messages must always arrive.
+        if (droppable && (client as any).bufferedAmount > 4 * 1024 * 1024) continue;
         client.send(json);
       }
     }
@@ -1171,9 +1180,17 @@ export default function (pi: ExtensionAPI) {
     pi.on(eventType as any, async (event: any, ctx: ExtensionContext) => {
       latestCtx = ctx;
 
-      // Forward event to all connected browser clients
-      // Wrap in { type: "event", event: ... } to match the existing frontend protocol
-      broadcast({ type: "event", event: { type: eventType, ...event } });
+      // Forward only the event payload needed by the browser. Pi's
+      // message_update also carries the complete accumulated assistant message;
+      // broadcasting that on every delta creates quadratic JSON/network work.
+      if (eventType === "message_update") {
+        broadcast({ type: "event", event: {
+          type: eventType,
+          assistantMessageEvent: event?.assistantMessageEvent,
+        } });
+      } else {
+        broadcast({ type: "event", event: { type: eventType, ...event } });
+      }
     });
   }
 
@@ -1371,6 +1388,7 @@ export default function (pi: ExtensionAPI) {
       entries,
       model,
       thinkingLevel,
+      tokenSaverEnabled,
       sessionName,
       sessionFile,
       isStreaming: !ctx.isIdle(),
@@ -1430,6 +1448,7 @@ export default function (pi: ExtensionAPI) {
               sessionFile,
               model: ctx.model,
               thinkingLevel: pi.getThinkingLevel(),
+              tokenSaverEnabled,
               isStreaming: !ctx.isIdle(),
               planMode: planModeState,
               entryCount,
@@ -1552,6 +1571,7 @@ export default function (pi: ExtensionAPI) {
           const state = {
             model,
             thinkingLevel: pi.getThinkingLevel(),
+            tokenSaverEnabled,
             isStreaming: !ctx.isIdle(),
             sessionFile: ctx.sessionManager.getSessionFile(),
             sessionName: pi.getSessionName(),
@@ -1759,6 +1779,25 @@ export default function (pi: ExtensionAPI) {
             restoreDefaultPreferences(defaults);
           }
           sendTo(ws, success("set_thinking_level"));
+          break;
+        }
+
+        case "set_token_saver": {
+          const enabled = command.enabled === true;
+          if (enabled && !tokenSaverEnabled) {
+            tokenSaverPreviousThinking = pi.getThinkingLevel();
+            if (tokenSaverPreviousThinking !== "off") {
+              const defaults = captureDefaultPreferences();
+              try { pi.setThinkingLevel("off"); } finally { restoreDefaultPreferences(defaults); }
+            }
+          } else if (!enabled && tokenSaverEnabled) {
+            const defaults = captureDefaultPreferences();
+            try { pi.setThinkingLevel(tokenSaverPreviousThinking || "off"); } finally { restoreDefaultPreferences(defaults); }
+          }
+          tokenSaverEnabled = enabled;
+          const data = { enabled: tokenSaverEnabled, thinkingLevel: pi.getThinkingLevel() };
+          broadcast({ type: "token_saver_state", data });
+          sendTo(ws, success("set_token_saver", data));
           break;
         }
 
@@ -2288,7 +2327,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     if (urlPath.startsWith("/api/search") && req.method === "GET") {
       const searchUrl = new URL(`http://localhost${req.url}`);
       const q = searchUrl.searchParams.get("q") || "";
-      serveSearch(res, q);
+      serveSearch(res, q, req);
       return;
     }
 
@@ -2826,7 +2865,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // Full-text search
   // ═══════════════════════════════════════
 
-  async function serveSearch(res: http.ServerResponse, query: string) {
+  async function serveSearch(res: http.ServerResponse, query: string, req?: http.IncomingMessage) {
     try {
       if (!query || query.length < 2) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -2856,6 +2895,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
 
         for (const file of files) {
+          if (req?.destroyed || res.destroyed) return;
           if (results.length >= MAX_RESULTS) break;
 
           try {
@@ -2870,6 +2910,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             const matches: any[] = [];
 
             for await (const line of rl) {
+              if (req?.destroyed || res.destroyed) {
+                rl.close();
+                stream.destroy();
+                return;
+              }
               if (!line.trim()) continue;
               try {
                 const entry = JSON.parse(line);
