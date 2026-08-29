@@ -1701,9 +1701,15 @@ textarea {
   }
 
   .token-saver-tag {
-    max-width: 88px;
+    max-width: 52px;
+    width: 30px;
     padding-inline: 5px;
-    font-size: 10px;
+    font-size: 0;
+  }
+
+  .token-saver-tag::before {
+    margin-right: 0;
+    font-size: 15px;
   }
 
   .settings-btn {
@@ -1822,6 +1828,53 @@ textarea {
 /* 关闭高消耗的持续脉冲动画，仅在临界状态才需要它 */
 .token-usage.critical {
   animation: none;
+}
+
+/* ---------- lightweight interaction polish ---------- */
+.header-cluster,
+#chat-form,
+.settings-row,
+.model-dropdown-item,
+.theme-swatch,
+.token-saver-tag,
+.thinking-tag,
+.plan-tag {
+  transition-duration: 0.16s;
+  transition-timing-function: var(--ease);
+}
+
+.header-cluster,
+#chat-form,
+.settings-row {
+  contain: paint;
+}
+
+.settings-row:hover {
+  background: color-mix(in srgb, var(--tau-surface-hover) 72%, transparent);
+}
+
+.model-dropdown-item:hover,
+.theme-swatch:hover {
+  transform: translateY(-1px);
+}
+
+.model-dropdown-item:active,
+.theme-swatch:active,
+.token-saver-tag:active,
+.thinking-tag:active,
+.plan-tag:active {
+  transform: translateY(0) scale(0.985);
+}
+
+@media (hover: none) {
+  .settings-row:hover {
+    background: transparent;
+  }
+
+  .model-dropdown-item:hover,
+  .theme-swatch:hover {
+    transform: none;
+  }
 }
 
 .streaming-text > .stream-stable,

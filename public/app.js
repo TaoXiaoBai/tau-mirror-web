@@ -334,6 +334,18 @@ let historyPrependInProgress = false;
 let userScrollLock = false;
 let olderHistoryRequest = null;
 
+function updateScrollBottomButton(atBottom = null) {
+  const isAtBottom = atBottom ?? (
+    messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 12
+  );
+  const shouldShow = !isAtBottom;
+  scrollBottomBtn.classList.toggle('hidden', !shouldShow);
+  if (isAtBottom) {
+    scrollBottomBadge.classList.add('hidden');
+    hasNewWhileScrolled = false;
+  }
+}
+
 function suspendMessageAutoScroll() {
   userScrollLock = true;
   previousMessagesScrollTop = messagesContainer.scrollTop;
@@ -410,10 +422,17 @@ messagesContainer.addEventListener('scroll', () => {
     const threshold = 150;
     const currentTop = messagesContainer.scrollTop;
     const movingUp = currentTop + 8 < previousMessagesScrollTop;
+    const movingDown = currentTop > previousMessagesScrollTop + 2;
     if (movingUp && !historyPrependInProgress) suspendMessageAutoScroll();
     previousMessagesScrollTop = currentTop;
     if (movingUp && currentTop < 500) loadOlderHistoryPage();
-    const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
+    const bottomDistance = Math.max(0, messagesContainer.scrollHeight - currentTop - messagesContainer.clientHeight);
+    const atBottom = bottomDistance < threshold;
+    const atActualBottom = bottomDistance < 12;
+    if (userScrollLock && atActualBottom && movingDown && !historyPrependInProgress) {
+      // Reaching the real bottom through a downward user scroll resumes follow.
+      userScrollLock = false;
+    }
     if (userScrollLock) {
       // Do not release the lock merely because the user is still within the
       // bottom threshold. A completion/layout event can otherwise look like
@@ -427,13 +446,7 @@ messagesContainer.addEventListener('scroll', () => {
       messageRenderer.isNearBottom = false;
       isScrolledUp = true;
     }
-    if (messageRenderer.isNearBottom) {
-      scrollBottomBtn.classList.add('hidden');
-      scrollBottomBadge.classList.add('hidden');
-      hasNewWhileScrolled = false;
-    } else {
-      scrollBottomBtn.classList.remove('hidden');
-    }
+    updateScrollBottomButton(atActualBottom);
   });
 }, { passive: true });
 
@@ -448,6 +461,7 @@ messagesContainer.addEventListener('wheel', (event) => {
         userScrollLock = false;
         messageRenderer.isNearBottom = true;
         isScrolledUp = false;
+        updateScrollBottomButton(true);
       }
     });
   }
@@ -468,13 +482,14 @@ function jumpMessagesToBottom() {
   messageRenderer.isNearBottom = true;
   requestAnimationFrame(() => {
     messagesContainer.style.scrollBehavior = previous;
+    updateScrollBottomButton(true);
   });
 }
 
 scrollBottomBtn.addEventListener('click', () => {
   jumpMessagesToBottom();
+  updateScrollBottomButton(true);
   isScrolledUp = false;
-  scrollBottomBtn.classList.add('hidden');
   scrollBottomBadge.classList.add('hidden');
   hasNewWhileScrolled = false;
 });
