@@ -1613,6 +1613,26 @@ function openModelDropdown() {
   search.setAttribute('aria-label', t('searchModels'));
   modelDropdownMenu.appendChild(search);
 
+  const filterBar = document.createElement('div');
+  filterBar.className = 'model-dropdown-filterbar';
+  const providerFilter = document.createElement('select');
+  providerFilter.className = 'model-provider-filter';
+  providerFilter.setAttribute('aria-label', t('filterProviders'));
+  const allProvidersOption = document.createElement('option');
+  allProvidersOption.value = '';
+  allProvidersOption.textContent = t('allProviders');
+  providerFilter.appendChild(allProvidersOption);
+  const providerNames = [...new Set(availableModels.map(model => model.provider || 'unknown'))]
+    .sort((a, b) => formatProvider(a).localeCompare(formatProvider(b)));
+  for (const provider of providerNames) {
+    const option = document.createElement('option');
+    option.value = provider;
+    option.textContent = `${formatProvider(provider)} (${availableModels.filter(model => (model.provider || 'unknown') === provider).length})`;
+    providerFilter.appendChild(option);
+  }
+  filterBar.appendChild(providerFilter);
+  modelDropdownMenu.appendChild(filterBar);
+
   const relayBar = document.createElement('div');
   relayBar.className = 'model-relay-bar';
   modelDropdownMenu.appendChild(relayBar);
@@ -1691,6 +1711,20 @@ function openModelDropdown() {
   const MODEL_LIST_PREVIEW = 8;
   let relaysById = new Map(getManageableRelays().map(item => [item.id, item]));
 
+  const MODEL_RECENTS_KEY = 'tau-recent-models';
+  const getRecentModelKeys = () => {
+    try {
+      const value = JSON.parse(localStorage.getItem(MODEL_RECENTS_KEY) || '[]');
+      return Array.isArray(value) ? value.filter(item => typeof item === 'string').slice(0, 8) : [];
+    } catch { return []; }
+  };
+  const rememberModel = (model) => {
+    try {
+      const key = getModelKey(model);
+      localStorage.setItem(MODEL_RECENTS_KEY, JSON.stringify([key, ...getRecentModelKeys().filter(item => item !== key)].slice(0, 8)));
+    } catch { /* private browsing or storage disabled */ }
+  };
+
   function buildModelItem(model, currentKey) {
     const isActive = getModelKey(model) === currentKey;
     const el = document.createElement('button');
@@ -1744,11 +1778,13 @@ function openModelDropdown() {
     return el;
   }
 
-  function renderItems(filter) {
+  function renderItems(filter, providerFilterValue = providerFilter.value) {
     const query = (filter || '').trim().toLowerCase();
     const providerRank = { 'ccswitch-cl': 0, 'newapi-zhyxulei': 1, 'tavern-openai': 2, 'newapi-futureppo': 3 };
     const groups = new Map();
     for (const model of availableModels) {
+      const modelProvider = model.provider || 'unknown';
+      if (providerFilterValue && modelProvider !== providerFilterValue) continue;
       if (query) {
         const haystack = `${model.id || ''} ${model.name || ''} ${model.provider || ''} ${formatModelName(model)}`.toLowerCase();
         if (!haystack.includes(query)) continue;
@@ -1775,7 +1811,17 @@ function openModelDropdown() {
     const currentKey = getCurrentModelKey();
     for (const provider of providers) {
       const models = groups.get(provider);
-      models.sort((a, b) => formatModelName(a).localeCompare(formatModelName(b)));
+      const recentKeys = getRecentModelKeys();
+      models.sort((a, b) => {
+        const aKey = getModelKey(a);
+        const bKey = getModelKey(b);
+        if (aKey === currentKey) return -1;
+        if (bKey === currentKey) return 1;
+        const aRecent = recentKeys.indexOf(aKey);
+        const bRecent = recentKeys.indexOf(bKey);
+        if (aRecent !== -1 || bRecent !== -1) return (aRecent === -1 ? 99 : aRecent) - (bRecent === -1 ? 99 : bRecent);
+        return formatModelName(a).localeCompare(formatModelName(b));
+      });
       const heading = document.createElement('div');
       heading.className = 'model-dropdown-provider';
       const relay = relaysById.get(provider);
@@ -1795,9 +1841,9 @@ function openModelDropdown() {
       heading.append(name, meta);
       frag.appendChild(heading);
 
-      const limit = query ? models.length : Math.min(models.length, MODEL_LIST_PREVIEW);
+      const limit = query || providerFilterValue ? models.length : Math.min(models.length, MODEL_LIST_PREVIEW);
       for (let i = 0; i < limit; i++) frag.appendChild(buildModelItem(models[i], currentKey));
-      if (!query && models.length > MODEL_LIST_PREVIEW) {
+      if (!query && !providerFilterValue && models.length > MODEL_LIST_PREVIEW) {
         const more = document.createElement('button');
         more.type = 'button';
         more.className = 'model-dropdown-more';
@@ -1854,6 +1900,7 @@ function openModelDropdown() {
     }
     currentModelId = model.id;
     currentModelProvider = model.provider || '';
+    rememberModel(model);
     applyContextWindow(model);
     updateModelLabel();
     showToast(t('switchedTo', { name: display }), 'success', 2600);
@@ -1861,9 +1908,10 @@ function openModelDropdown() {
 
   renderItems('');
   let searchTimer = 0;
+  providerFilter.addEventListener('change', () => renderItems(search.value, providerFilter.value));
   search.addEventListener('input', () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => renderItems(search.value), 80);
+    searchTimer = setTimeout(() => renderItems(search.value, providerFilter.value), 80);
   });
   search.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
