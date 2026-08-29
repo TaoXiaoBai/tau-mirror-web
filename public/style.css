@@ -3409,11 +3409,8 @@ body.hide-thinking .thinking-block { display: none !important; }
   align-items: center;
   justify-content: center;
   z-index: 20;
-  transition: bottom 0.18s var(--ease), background 0.2s var(--ease), border-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease), opacity 0.18s var(--ease), transform 0.18s var(--ease);
+  transition: bottom 0.18s var(--ease), background 0.25s var(--ease), border-color 0.25s var(--ease), color 0.25s var(--ease), box-shadow 0.25s var(--ease), opacity 0.2s var(--ease), transform 0.2s var(--ease);
   box-shadow: var(--shadow-md);
-  /* Keep the floating control cheap to animate: transform/opacity stay on the compositor. */
-  contain: layout paint;
-  will-change: transform, opacity;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   animation: popIn 0.25s var(--spring);
@@ -3470,11 +3467,10 @@ body.hide-thinking .thinking-block { display: none !important; }
   to { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
 }
 
-/* Lightweight entrance: one short transform animation, no continuous work. */
 @keyframes popIn {
-  from { opacity: 0; transform: translateY(5px) scale(0.88); }
-  70% { transform: translateY(-1px) scale(1.03); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: scale(0.7); }
+  60% { transform: scale(1.05); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 
