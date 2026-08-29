@@ -507,8 +507,10 @@ function showNewMessageBadge() {
 
 wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
-  // First paint uses the local registry. Do not hit every provider on connect.
-  if (!availableModels.length) setTimeout(() => fetchModelInfo(), 80);
+  // Re-read the Pi registry after every connection. The terminal may have been
+  // restarted or reloaded while this tab was asleep; keeping the old non-empty
+  // array would otherwise hide newly added/removed model options forever.
+  setTimeout(() => fetchModelInfo(), 80);
 });
 
 wsClient.addEventListener('planModeState', (event) => {
@@ -565,6 +567,15 @@ function handleRPCEvent(event) {
       break;
     case 'message_end':
       handleMessageEnd(event.message);
+      break;
+    case 'model_select':
+      handleModelSelect(event);
+      break;
+    case 'thinking_level_select':
+      if (event.level) {
+        currentThinkingLevel = event.level;
+        updateThinkingBtn();
+      }
       break;
     case 'tool_execution_start':
       handleToolExecutionStart(event);
@@ -1537,6 +1548,25 @@ async function loadModelInfo(options = {}) {
     }
   } catch (error) {
     if (options.showStatus) showToast(t('modelsLoadFail'), 'error', 4200);
+  }
+}
+
+function handleModelSelect(event) {
+  const model = event?.model;
+  if (!model || !model.id) return;
+  const previousKey = getModelKey({ provider: currentModelProvider, id: currentModelId });
+  currentModelId = model.id;
+  currentModelProvider = model.provider || '';
+  if (event.thinkingLevel) currentThinkingLevel = event.thinkingLevel;
+  // Keep the browser's model metadata in sync when the TUI changes model.
+  const next = availableModels.find(item => getModelKey(item) === getModelKey(model));
+  if (next) Object.assign(next, model);
+  else availableModels.push(model);
+  applyContextWindow(next || model);
+  updateModelLabel();
+  updateThinkingBtn();
+  if (previousKey !== getModelKey(model) && modelDropdownMenu && !modelDropdownMenu.classList.contains('hidden')) {
+    openModelDropdown();
   }
 }
 
@@ -2607,6 +2637,10 @@ wsClient.addEventListener('mirrorHelloOk', (e) => {
   };
   updateMirrorInputState();
   updateMirrorLiveIndicator();
+  // A fresh Pi instance can have a different registry even when the mirror
+  // snapshot itself is unchanged. Refresh the local model list without probing
+  // every provider; explicit Refresh remains the provider-metadata operation.
+  setTimeout(() => fetchModelInfo(), 80);
   updateCostDisplay();
   updateTokenUsage();
 });

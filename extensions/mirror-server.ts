@@ -1217,7 +1217,7 @@ export default function (pi: ExtensionAPI) {
     "turn_start", "turn_end",
     "message_start", "message_update", "message_end",
     "tool_execution_start", "tool_execution_update", "tool_execution_end",
-    "model_select",
+    "model_select", "thinking_level_select",
   ] as const;
 
   for (const eventType of eventTypes) {
@@ -1231,6 +1231,15 @@ export default function (pi: ExtensionAPI) {
         broadcast({ type: "event", event: {
           type: eventType,
           assistantMessageEvent: event?.assistantMessageEvent,
+        } });
+      } else if (eventType === "model_select") {
+        // Model switches can originate in either the TUI or the browser. Include
+        // the effective thinking level because Pi may clamp/change it as part of
+        // the model switch before emitting model_select.
+        broadcast({ type: "event", event: {
+          type: eventType,
+          ...event,
+          thinkingLevel: pi.getThinkingLevel(),
         } });
       } else {
         broadcast({ type: "event", event: { type: eventType, ...event } });
