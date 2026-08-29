@@ -2185,6 +2185,31 @@ textarea {
   }
 }
 
+.header-cluster,
+#chat-form,
+.settings-row {
+  contain: none;
+}
+
+.header-cluster {
+  overflow: visible;
+  position: relative;
+  z-index: 30;
+}
+
+.header-cluster:has(.model-dropdown.open) {
+  z-index: 1002;
+}
+
+.model-dropdown,
+.model-dropdown-menu {
+  overflow: visible;
+}
+
+.model-dropdown-menu {
+  z-index: 1003;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .model-dropdown-btn,
   .thinking-tag,
