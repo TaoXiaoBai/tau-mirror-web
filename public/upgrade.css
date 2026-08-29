@@ -2069,6 +2069,122 @@ textarea {
   }
 }
 
+/* ---------- header legibility correction ----------
+   Keep the toolbar quiet, but give each control a clear visual boundary. */
+.header {
+  background: color-mix(in srgb, var(--bg-solid) 96%, var(--text-primary) 4%);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.header-left,
+.header-right {
+  gap: 10px;
+}
+
+.header-cluster {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--tau-surface);
+}
+
+.header-cluster:hover {
+  border-color: var(--border-hover);
+  background: var(--tau-surface);
+}
+
+.header-cluster-metrics {
+  gap: 5px;
+  padding: 3px 5px;
+}
+
+.model-dropdown-btn {
+  min-height: 32px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.model-dropdown-btn:hover,
+.model-dropdown.open .model-dropdown-btn {
+  background: var(--tau-surface-hover);
+  border-color: var(--border-hover);
+}
+
+.model-dropdown-kicker {
+  color: var(--text-secondary);
+}
+
+.model-dropdown-label {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.thinking-control,
+.token-saver-control,
+.plan-control {
+  border-left: 1px solid var(--border);
+  padding-left: 5px;
+}
+
+.thinking-tag,
+.token-saver-tag,
+.plan-tag {
+  color: var(--text-primary);
+  border-color: transparent;
+  background: transparent;
+}
+
+.thinking-tag:hover,
+.token-saver-tag:hover,
+.plan-tag:hover,
+.thinking-tag[aria-expanded="true"],
+.plan-tag[aria-expanded="true"] {
+  background: var(--tau-surface-hover);
+  color: var(--text-primary);
+}
+
+.token-usage,
+.session-cost,
+.status {
+  color: var(--text-secondary);
+}
+
+.status-text {
+  color: var(--text-primary);
+}
+
+.model-refresh-btn,
+.header-actions .icon-btn,
+.header-actions .settings-btn,
+.sidebar-toggle {
+  color: var(--text-secondary);
+}
+
+.model-refresh-btn:hover,
+.header-actions .icon-btn:hover,
+.header-actions .settings-btn:hover,
+.sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: var(--tau-surface-hover);
+}
+
+@media (max-width: 768px) {
+  .header-left,
+  .header-right {
+    gap: 6px;
+  }
+
+  .header-cluster {
+    gap: 1px;
+    padding: 2px;
+  }
+
+  .header-cluster-metrics {
+    padding: 2px 4px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .model-dropdown-btn,
   .thinking-tag,
