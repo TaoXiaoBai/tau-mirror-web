@@ -392,6 +392,9 @@ async function loadOlderHistoryPage() {
 }
 
 messagesContainer.addEventListener('scroll', () => {
+  const currentTop = messagesContainer.scrollTop;
+  const movingUpNow = currentTop + 8 < previousMessagesScrollTop;
+  if (movingUpNow && !historyPrependInProgress) suspendMessageAutoScroll();
   if (scrollBtnPending) return;
   scrollBtnPending = true;
   requestAnimationFrame(() => {
@@ -403,19 +406,15 @@ messagesContainer.addEventListener('scroll', () => {
     previousMessagesScrollTop = currentTop;
     if (movingUp && currentTop < 500) loadOlderHistoryPage();
     const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
-    // Once the user intentionally moves upward, a layout/streaming scroll
-    // event must not be mistaken for permission to resume auto-follow. Only
-    // reaching the real bottom again releases this lock.
-    if (userScrollLock && !atBottom) {
+    if (userScrollLock) {
+      // Do not release the lock merely because the user is still within the
+      // bottom threshold. A completion/layout event can otherwise look like
+      // "at bottom" and let a queued auto-scroll pull the viewport down.
       messageRenderer.isNearBottom = false;
       isScrolledUp = true;
-    } else if (atBottom && !historyPrependInProgress) {
-      userScrollLock = false;
+    } else if (atBottom) {
       messageRenderer.isNearBottom = true;
       isScrolledUp = false;
-      scrollBottomBtn.classList.add('hidden');
-      scrollBottomBadge.classList.add('hidden');
-      hasNewWhileScrolled = false;
     } else {
       messageRenderer.isNearBottom = false;
       isScrolledUp = true;
@@ -431,16 +430,24 @@ messagesContainer.addEventListener('scroll', () => {
 }, { passive: true });
 
 messagesContainer.addEventListener('wheel', (event) => {
+  // Wheel is a reliable user-intent signal and fires before the scroll event.
+  // Keep the lock until an intentional downward wheel reaches the bottom.
   if (event.deltaY < 0) suspendMessageAutoScroll();
+  if (event.deltaY > 0 && userScrollLock) {
+    requestAnimationFrame(() => {
+      const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 150;
+      if (atBottom) {
+        userScrollLock = false;
+        messageRenderer.isNearBottom = true;
+        isScrolledUp = false;
+      }
+    });
+  }
   if (event.deltaY < 0 && messagesContainer.scrollTop < 500) loadOlderHistoryPage();
 }, { passive: true });
 
-messagesContainer.addEventListener('touchstart', () => {
-  suspendMessageAutoScroll();
-}, { passive: true });
-
-messagesContainer.addEventListener('pointerdown', () => {
-  suspendMessageAutoScroll();
+messagesContainer.addEventListener('touchmove', (event) => {
+  if (event.touches?.length) suspendMessageAutoScroll();
 }, { passive: true });
 
 function jumpMessagesToBottom() {

@@ -2149,7 +2149,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 
 .messages::-webkit-scrollbar { width: 6px; }

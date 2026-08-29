@@ -93,6 +93,7 @@ export class MessageRenderer {
     this._thinkingTimers = new Map();
     this._lazyThinking = new Map();
     this._bottomScrollFrame = null;
+    this._streamingPaintTimers = new Map();
     this._mountTarget = null;
 
     this.container.addEventListener('click', (event) => {
@@ -118,6 +119,8 @@ export class MessageRenderer {
     this._lazyThinking.clear();
     if (this._bottomScrollFrame !== null) cancelAnimationFrame(this._bottomScrollFrame);
     this._bottomScrollFrame = null;
+    for (const timer of this._streamingPaintTimers.values()) clearTimeout(timer);
+    this._streamingPaintTimers.clear();
     this._mountTarget = null;
     this.container.replaceChildren();
   }
@@ -366,19 +369,33 @@ export class MessageRenderer {
       contentDiv.appendChild(textNode);
     }
     textNode.dataset.raw = (textNode.dataset.raw || '') + delta;
+
+    // app.js batches transport chunks into animation frames. Rendering the
+    // whole growing markdown document on every frame is still O(n²) for long
+    // answers. Keep raw text lossless and schedule one trailing paint.
     const length = textNode.dataset.raw.length;
-    const now = performance.now();
-    const lastPaint = Number(textNode.dataset.lastPaintAt || 0);
-    // Repainting an unfinished giant paragraph on every animation frame is
-    // near-quadratic. Keep short answers fully live, then progressively cap
-    // markdown paint frequency while retaining every raw delta for final paint.
     const minInterval = length > 100000 ? 140 : length > 40000 ? 75 : length > 12000 ? 32 : 0;
-    if (minInterval && now - lastPaint < minInterval) return;
-    textNode.dataset.lastPaintAt = String(now);
+    const wait = minInterval - (performance.now() - Number(textNode.dataset.lastPaintAt || 0));
+    if (wait > 0) {
+      if (!this._streamingPaintTimers.has(textNode)) {
+        const timer = setTimeout(() => {
+          this._streamingPaintTimers.delete(textNode);
+          if (textNode.isConnected) this._paintStreamingMarkdown(textNode);
+        }, wait);
+        this._streamingPaintTimers.set(textNode, timer);
+      }
+      return;
+    }
     this._paintStreamingMarkdown(textNode);
   }
 
   _paintStreamingMarkdown(textNode) {
+    const timer = this._streamingPaintTimers.get(textNode);
+    if (timer) {
+      clearTimeout(timer);
+      this._streamingPaintTimers.delete(textNode);
+    }
+    textNode.dataset.lastPaintAt = String(performance.now());
     let src = textNode.dataset.raw || '';
     const fenceCount = (src.match(/^```/gm) || []).length;
     if (fenceCount % 2 !== 0) src += '\n```';
@@ -407,9 +424,14 @@ export class MessageRenderer {
     const contentDiv = messageElement.querySelector('.message-content');
     if (contentDiv) {
       contentDiv.classList.remove('streaming');
+      const streamingText = contentDiv.querySelector('.streaming-text');
+      if (streamingText) {
+        const timer = this._streamingPaintTimers.get(streamingText);
+        if (timer) clearTimeout(timer);
+        this._streamingPaintTimers.delete(streamingText);
+      }
       // Get the raw answer text without accidentally folding live reasoning
       // into the final answer when a response contains thinking only.
-      const streamingText = contentDiv.querySelector('.streaming-text');
       const hasThinkingBlock = !!contentDiv.querySelector('.streaming-thinking');
       const rawText = streamingText ? (streamingText.dataset.raw || streamingText.textContent) : hasThinkingBlock ? '' : contentDiv.textContent;
       
@@ -519,9 +541,14 @@ export class MessageRenderer {
     this._bottomScrollFrame = requestAnimationFrame(() => {
       this._bottomScrollFrame = null;
       // The user may have started scrolling after this frame was queued.
-      // Re-check here so an old streaming/tool update cannot snap them down.
       if (!this.isNearBottom) return;
+      // Programmatic follow must never use the page's smooth scrolling. A
+      // smooth animation can survive completion and pull the viewport down
+      // after the user starts scrolling upward.
+      const previousBehavior = this.container.style.scrollBehavior;
+      this.container.style.scrollBehavior = 'auto';
       this.container.scrollTop = this.container.scrollHeight;
+      this.container.style.scrollBehavior = previousBehavior;
     });
   }
 

@@ -50,6 +50,23 @@ const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
 // @ts-ignore — __dirname is provided by jiti at runtime
 const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
+const STATIC_ROOT = path.resolve(STATIC_DIR);
+const STATIC_DIR_PREFIX = STATIC_ROOT.endsWith(path.sep) ? STATIC_ROOT : `${STATIC_ROOT}${path.sep}`;
+const MAX_FILE_PREVIEW = 8 * 1024 * 1024;
+
+function safeStaticPath(urlPath: string): string | null {
+  let decoded: string;
+  try { decoded = decodeURIComponent(urlPath); } catch { return null; }
+  const candidate = path.resolve(STATIC_ROOT, `.${decoded.startsWith('/') ? decoded : `/${decoded}`}`);
+  return candidate === STATIC_ROOT || candidate.startsWith(STATIC_DIR_PREFIX) ? candidate : null;
+}
+
+function setSecurityHeaders(res: http.ServerResponse) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+}
 
 function findPublicDir(): string {
     const candidates: string[] = [];
@@ -2144,6 +2161,7 @@ export default function (pi: ExtensionAPI) {
   // Static file server
   // ═══════════════════════════════════════
   function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
+    setSecurityHeaders(res);
     let urlPath = req.url || "/";
 
     // Auth gate — exempt /api/health for monitoring
@@ -2164,7 +2182,12 @@ export default function (pi: ExtensionAPI) {
     // Default to index.html
     if (urlPath === "/") urlPath = "/index.html";
 
-    const filePath = path.join(STATIC_DIR, urlPath);
+    const filePath = safeStaticPath(urlPath);
+    if (!filePath) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
 
     // Security: prevent directory traversal
     if (!filePath.startsWith(STATIC_DIR)) {
@@ -2208,10 +2231,19 @@ export default function (pi: ExtensionAPI) {
   // API routes (sessions list, etc.)
   // ═══════════════════════════════════════
   function handleApiRoute(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string) {
-    // CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    setSecurityHeaders(res);
+    // The control plane is same-origin by default. Do not expose wildcard CORS.
+    const origin = req.headers.origin;
+    const host = req.headers.host || "localhost";
+    if (origin && origin !== `http://${host}` && origin !== `https://${host}`) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden origin" }));
+      return;
+    }
+    res.setHeader("Access-Control-Allow-Origin", origin || `http://${host}`);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Vary", "Origin");
 
     if (req.method === "OPTIONS") {
       res.writeHead(200);
@@ -2273,6 +2305,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile()) throw new Error("Not a file");
+        if (stat.size > MAX_FILE_PREVIEW) throw new Error("File too large");
         res.writeHead(200, { "Content-Type": mimeType, "Cache-Control": "max-age=60" });
         fs.createReadStream(filePath).pipe(res);
       } catch (err: any) {
