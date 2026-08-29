@@ -1615,6 +1615,9 @@ function openModelDropdown() {
 
   const filterBar = document.createElement('div');
   filterBar.className = 'model-dropdown-filterbar';
+  const providerNav = document.createElement('div');
+  providerNav.className = 'model-provider-nav';
+  providerNav.setAttribute('aria-label', t('filterProviders'));
   const providerFilter = document.createElement('select');
   providerFilter.className = 'model-provider-filter';
   providerFilter.setAttribute('aria-label', t('filterProviders'));
@@ -1622,15 +1625,34 @@ function openModelDropdown() {
   allProvidersOption.value = '';
   allProvidersOption.textContent = t('allProviders');
   providerFilter.appendChild(allProvidersOption);
-  const providerNames = [...new Set(availableModels.map(model => model.provider || 'unknown'))]
+  const providerCounts = new Map();
+  for (const model of availableModels) {
+    const provider = model.provider || 'unknown';
+    providerCounts.set(provider, (providerCounts.get(provider) || 0) + 1);
+  }
+  const providerNames = [...providerCounts.keys()]
     .sort((a, b) => formatProvider(a).localeCompare(formatProvider(b)));
+  const addProviderNavItem = (value, label, count) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `model-provider-nav-item${value ? '' : ' active'}`;
+    button.dataset.provider = value;
+    const name = document.createElement('span');
+    name.textContent = label;
+    const badge = document.createElement('small');
+    badge.textContent = String(count);
+    button.append(name, badge);
+    providerNav.appendChild(button);
+  };
+  addProviderNavItem('', t('allProviders'), availableModels.length);
   for (const provider of providerNames) {
     const option = document.createElement('option');
     option.value = provider;
-    option.textContent = `${formatProvider(provider)} (${availableModels.filter(model => (model.provider || 'unknown') === provider).length})`;
+    option.textContent = `${formatProvider(provider)} (${providerCounts.get(provider) || 0})`;
     providerFilter.appendChild(option);
+    addProviderNavItem(provider, formatProvider(provider), providerCounts.get(provider) || 0);
   }
-  filterBar.appendChild(providerFilter);
+  filterBar.append(providerNav, providerFilter);
   modelDropdownMenu.appendChild(filterBar);
 
   const relayBar = document.createElement('div');
@@ -1822,35 +1844,42 @@ function openModelDropdown() {
         if (aRecent !== -1 || bRecent !== -1) return (aRecent === -1 ? 99 : aRecent) - (bRecent === -1 ? 99 : bRecent);
         return formatModelName(a).localeCompare(formatModelName(b));
       });
-      const heading = document.createElement('div');
-      heading.className = 'model-dropdown-provider';
-      const relay = relaysById.get(provider);
+      const providerColumn = document.createElement('div');
+      providerColumn.className = 'model-provider-column';
+      const heading = document.createElement('button');
+      heading.type = 'button';
+      heading.className = `model-provider-column-title${provider === (providerFilterValue || '') ? ' active' : ''}`;
+      heading.dataset.provider = provider;
+      const name = document.createElement('span');
+      name.textContent = formatProvider(provider);
       const meta = document.createElement('span');
       meta.className = 'model-dropdown-provider-meta';
       meta.append(document.createTextNode(String(models.length)));
+      const relay = relaysById.get(provider);
       if (relay) {
-        const edit = document.createElement('button');
-        edit.type = 'button';
+        const edit = document.createElement('span');
         edit.className = 'model-dropdown-provider-edit';
         edit.dataset.relayId = relay.id;
         edit.textContent = t('editRelay');
         meta.appendChild(edit);
       }
-      const name = document.createElement('span');
-      name.textContent = formatProvider(provider);
       heading.append(name, meta);
-      frag.appendChild(heading);
+      providerColumn.appendChild(heading);
 
+      const modelGrid = document.createElement('div');
+      modelGrid.className = 'model-provider-models';
       const limit = query || providerFilterValue ? models.length : Math.min(models.length, MODEL_LIST_PREVIEW);
-      for (let i = 0; i < limit; i++) frag.appendChild(buildModelItem(models[i], currentKey));
+      for (let i = 0; i < limit; i++) modelGrid.appendChild(buildModelItem(models[i], currentKey));
+      providerColumn.appendChild(modelGrid);
       if (!query && !providerFilterValue && models.length > MODEL_LIST_PREVIEW) {
         const more = document.createElement('button');
         more.type = 'button';
         more.className = 'model-dropdown-more';
         more.dataset.provider = provider;
         more.textContent = t('showMoreModels', { n: models.length });
-        frag.appendChild(more);
+        providerColumn.appendChild(more);
       }
+      frag.appendChild(providerColumn);
     }
     itemsContainer.replaceChildren(frag);
   }
@@ -1862,6 +1891,12 @@ function openModelDropdown() {
       const item = contextBadge.closest('.model-dropdown-item');
       const model = availableModels.find(entry => getModelKey(entry) === item?.dataset.modelKey);
       if (model) await editModelContext(model);
+      return;
+    }
+    const providerHeading = event.target.closest('.model-provider-column-title');
+    if (providerHeading && !event.target.closest('.model-dropdown-provider-edit')) {
+      event.stopPropagation();
+      selectProvider(providerHeading.dataset.provider || '');
       return;
     }
     const edit = event.target.closest('.model-dropdown-provider-edit');
@@ -1879,9 +1914,11 @@ function openModelDropdown() {
         .filter(model => (model.provider || 'unknown') === provider)
         .sort((a, b) => formatModelName(a).localeCompare(formatModelName(b)));
       const currentKey = getCurrentModelKey();
+      const modelGrid = more.closest('.model-provider-column')?.querySelector('.model-provider-models');
       const frag = document.createDocumentFragment();
       for (const model of models) frag.appendChild(buildModelItem(model, currentKey));
-      more.replaceWith(frag);
+      if (modelGrid) modelGrid.replaceChildren(frag);
+      more.remove();
       return;
     }
     const item = event.target.closest('.model-dropdown-item');
@@ -1908,7 +1945,19 @@ function openModelDropdown() {
 
   renderItems('');
   let searchTimer = 0;
-  providerFilter.addEventListener('change', () => renderItems(search.value, providerFilter.value));
+  function selectProvider(value) {
+    providerFilter.value = value;
+    providerNav.querySelectorAll('.model-provider-nav-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.provider === value);
+    });
+    renderItems(search.value, value);
+  }
+
+  providerNav.addEventListener('click', event => {
+    const item = event.target.closest('.model-provider-nav-item');
+    if (item) selectProvider(item.dataset.provider || '');
+  });
+  providerFilter.addEventListener('change', () => selectProvider(providerFilter.value));
   search.addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => renderItems(search.value, providerFilter.value), 80);
