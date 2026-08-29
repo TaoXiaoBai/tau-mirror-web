@@ -1542,6 +1542,73 @@ textarea {
   }
 }
 
+/* Context usage and its emergency action share one stable-height slot. The
+   action used to be inserted beside the popover wrapper, so entering the red
+   state could stretch the metrics cluster and misalign the status control. */
+.context-usage-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.context-usage-group .token-usage-wrap {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.context-usage-group .compact-btn {
+  flex: 0 0 auto;
+  min-height: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0 8px;
+  border-radius: 7px;
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+  animation: compactActionIn 0.18s var(--ease);
+}
+
+.context-usage-group .compact-btn:hover {
+  transform: translateY(-1px);
+}
+
+.context-usage-group .compact-btn:active {
+  transform: translateY(0);
+}
+
+.context-usage-group .compact-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+  transform: none;
+}
+
+.context-usage-group .compact-btn.is-working {
+  color: var(--text-dim);
+  border-color: var(--border);
+  background: var(--tau-surface);
+}
+
+@keyframes compactActionIn {
+  from { opacity: 0; transform: translateX(4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (max-width: 900px) {
+  .header-right .context-usage-group {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-usage-group .compact-btn {
+    animation: none;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════
    性能优化（本地）
    顶栏 header 与底部输入栏 input-area 是悬浮在滚动消息列表上方的

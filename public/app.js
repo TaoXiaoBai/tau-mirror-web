@@ -2734,6 +2734,10 @@ function updateTokenUsage() {
     tokenUsageEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
+    hideCompactButton();
+  } else {
+    tokenUsageEl.classList.remove('warning', 'critical');
+    hideCompactButton();
   }
 }
 
@@ -2742,14 +2746,27 @@ function showCompactButton() {
   const btn = document.createElement('button');
   btn.id = 'compact-btn';
   btn.className = 'compact-btn';
-  btn.textContent = '整理';
-  btn.title = '上下文已超过 80%，点击整理以释放空间';
-  btn.addEventListener('click', () => {
-    rpcCommand({ type: 'compact' }, '正在整理上下文…');
-    hideCompactButton();
+  btn.type = 'button';
+  btn.textContent = t('compactBtn');
+  btn.title = t('compactBtnTitle');
+  btn.setAttribute('aria-label', t('compactBtnTitle'));
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('is-working');
+    btn.textContent = t('compactWorkingShort');
+    const result = await rpcCommand({ type: 'compact' }, t('compactWorking'));
+    if (result?.success) hideCompactButton();
+    else {
+      btn.disabled = false;
+      btn.classList.remove('is-working');
+      btn.textContent = t('compactBtn');
+    }
   });
-  // Insert next to token usage in header
-  tokenUsageEl.parentElement.insertBefore(btn, tokenUsageEl.nextSibling);
+  // Keep the action in the same fixed-height group as the usage pill. This
+  // prevents the critical state from pushing the status cluster out of line.
+  const group = tokenUsageEl.closest('.context-usage-group') || tokenUsageEl.parentElement;
+  group.appendChild(btn);
 }
 
 function hideCompactButton() {
