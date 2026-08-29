@@ -153,6 +153,11 @@ const en = {
   statsTitle: 'Session stats',
   statsMessages: 'Messages: {total} (you {user}, Pi {assistant})',
   statsTools: 'Tool calls: {n}',
+  ctxUsedPercent: '{pct}% used',
+  ctxUnknown: 'Context usage is not available yet',
+  ctxCache: 'Cache',
+  ctxMessages: 'Messages',
+  ctxAvailable: 'Available',
   statsContext: 'Context: about {k}k tokens',
 
   thinkOff: 'Off',
@@ -502,6 +507,11 @@ const zh = {
   statsTitle: '会话统计',
   statsMessages: '消息：{total}（你 {user}，Pi {assistant}）',
   statsTools: '工具调用：{n}',
+  ctxUsedPercent: '已使用 {pct}%',
+  ctxUnknown: '暂时没有可用的上下文数据',
+  ctxCache: '缓存',
+  ctxMessages: '消息',
+  ctxAvailable: '可用',
   statsContext: '上下文：约 {k}k tokens',
 
   thinkOff: '关闭',

@@ -1503,6 +1503,7 @@ export default function (pi: ExtensionAPI) {
               thinkingLevel: pi.getThinkingLevel(),
               tokenSaverEnabled,
               isStreaming: !ctx.isIdle(),
+              contextUsage: ctx.getContextUsage(),
               planMode: planModeState,
               entryCount,
               entrySig,
@@ -1626,6 +1627,7 @@ export default function (pi: ExtensionAPI) {
             thinkingLevel: pi.getThinkingLevel(),
             tokenSaverEnabled,
             isStreaming: !ctx.isIdle(),
+            contextUsage: ctx.getContextUsage(),
             sessionFile: ctx.sessionManager.getSessionFile(),
             sessionName: pi.getSessionName(),
             autoCompactionEnabled: true, // Extension can't easily check this

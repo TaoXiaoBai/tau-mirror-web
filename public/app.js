@@ -108,7 +108,8 @@ let unreadCount = 0;
 let isScrolledUp = false;
 let hasNewWhileScrolled = false;
 let lastSentMessage = null; // Track to avoid duplicate rendering in mirror mode
-let lastUsage = null; // Full usage object for context visualiser
+let lastUsage = null; // Full provider usage object for context visualiser
+let currentContextUsage = null; // Pi's authoritative current context estimate
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let historyPreviewSessionFile = null;
@@ -2292,6 +2293,7 @@ async function newSession() {
     historyPreviewSessionFile = null;
     sessionTotalCost = 0;
     lastInputTokens = 0;
+    currentContextUsage = null;
     lastUsage = null;
     state.reset();
     messageRenderer.clear();
@@ -2546,6 +2548,8 @@ function handleMirrorSync(data) {
     updateThinkingBtn();
   }
 
+  if (data.contextUsage) applyContextUsage(data.contextUsage);
+
   if (data.tokenSaverEnabled !== undefined) {
     tokenSaverEnabled = !!data.tokenSaverEnabled;
     if (typeof updateTokenSaverBtn === 'function') updateTokenSaverBtn();
@@ -2624,8 +2628,8 @@ wsClient.addEventListener('mirrorHelloOk', (e) => {
     currentThinkingLevel = data.thinkingLevel;
     updateThinkingBtn();
   }
+  if (data.contextUsage) applyContextUsage(data.contextUsage);
   if (data.planMode) applyPlanModeState(data.planMode);
-  // Older Tau backends omit Plan Mode from mirror_hello_ok.
   else setPlanModeAction('get_state');
   lastSyncSessionFile = data.sessionFile || lastSyncSessionFile;
   lastSyncEntryCount = data.entryCount ?? lastSyncEntryCount;
@@ -3002,6 +3006,14 @@ function updateCostDisplay() {
   } else {
     sessionCostEl.classList.remove('visible');
   }
+}
+
+function applyContextUsage(usage) {
+  if (!usage || typeof usage !== 'object') return;
+  currentContextUsage = usage;
+  if (typeof usage.tokens === 'number') lastInputTokens = usage.tokens;
+  if (Number(usage.contextWindow) > 0) contextWindowSize = Number(usage.contextWindow);
+  updateTokenUsage();
 }
 
 function updateTokenUsage() {
@@ -3606,25 +3618,32 @@ function formatTokens(n) {
 }
 
 function updateContextViz() {
-  if (!lastUsage || !contextWindowSize) return;
+  const authoritative = currentContextUsage;
+  const total = Number(authoritative?.contextWindow) || contextWindowSize;
+  const authoritativeTokens = typeof authoritative?.tokens === 'number' ? authoritative.tokens : null;
+  if (!total) {
+    contextBar.innerHTML = '';
+    contextLegend.innerHTML = `<div class="context-legend-item"><span>${t('ctxUnknown')}</span></div>`;
+    contextVizUsed.textContent = t('ctxUnknown');
+    contextVizTotal.textContent = '—';
+    return;
+  }
 
-  const input = lastUsage.input || 0;
-  const cacheRead = lastUsage.cacheRead || 0;
-  const cacheWrite = lastUsage.cacheWrite || 0;
-  const output = lastUsage.output || 0;
-  const total = contextWindowSize;
-
-  // Input tokens include cache — break it down
-  // "input" from API = fresh (uncached) input tokens
-  // "cacheRead" = tokens served from cache (system prompt, earlier messages)
-  const freshInput = input;
-  const totalUsed = freshInput + cacheRead;
+  const input = lastUsage?.input || 0;
+  const cacheRead = lastUsage?.cacheRead || 0;
+  // Pi's context estimate is authoritative and remains available between turns.
+  // Provider usage is used only for the optional cache/message breakdown.
+  const providerUsed = input + cacheRead;
+  const totalUsed = authoritativeTokens ?? providerUsed;
+  const canBreakDown = !!lastUsage && providerUsed > 0 && Math.abs(providerUsed - totalUsed) <= Math.max(1000, totalUsed * 0.2);
+  const freshInput = canBreakDown ? input : totalUsed;
+  const shownCache = canBreakDown ? cacheRead : 0;
   const free = Math.max(0, total - totalUsed);
 
   const segments = [
-    { key: 'cache', label: '缓存', tokens: cacheRead, color: 'cache' },
-    { key: 'messages', label: '消息', tokens: freshInput, color: 'messages' },
-    { key: 'free', label: '可用', tokens: free, color: 'free' },
+    { key: 'cache', label: t('ctxCache'), tokens: shownCache, color: 'cache' },
+    { key: 'messages', label: t('ctxMessages'), tokens: freshInput, color: 'messages' },
+    { key: 'free', label: t('ctxAvailable'), tokens: free, color: 'free' },
   ];
 
   // Build bar
@@ -3656,7 +3675,7 @@ function updateContextViz() {
 
   // Footer
   const pct = Math.round((totalUsed / total) * 100);
-  contextVizUsed.textContent = `已使用 ${pct}%`;
+  contextVizUsed.textContent = t('ctxUsedPercent', { pct });
   contextVizTotal.textContent = `${formatTokens(totalUsed)} / ${formatTokens(total)}`;
 }
 
