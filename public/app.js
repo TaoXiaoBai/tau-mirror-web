@@ -332,6 +332,7 @@ let scrollBtnPending = false;
 let previousMessagesScrollTop = 0;
 let historyPrependInProgress = false;
 let userScrollLock = false;
+let olderHistoryRequest = null;
 
 function suspendMessageAutoScroll() {
   userScrollLock = true;
@@ -358,11 +359,15 @@ async function loadOlderHistoryPage() {
   if (!page?.hasMore || page.loading || page.generation !== renderGeneration) return;
   page.loading = true;
   let renderOwnsLoading = false;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('timeout'), 5000);
+  olderHistoryRequest?.abort('superseded');
+  olderHistoryRequest = controller;
   try {
     const before = page.bootstrap ? '' : `&before=${page.cursor}`;
     const limit = page.bootstrap ? (page.bootstrapLimit || 200) : 120;
     const url = `/api/sessions/${encodeURIComponent(page.dirName)}/${encodeURIComponent(page.file)}?limit=${limit}${before}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (page !== historyPageState || page.generation !== renderGeneration) return;
@@ -384,10 +389,12 @@ async function loadOlderHistoryPage() {
       });
     }
   } catch (error) {
-    if (error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
+    if (error?.name !== 'AbortError') {
       console.warn('[History] Could not load older page:', error);
     }
   } finally {
+    clearTimeout(timeoutId);
+    if (olderHistoryRequest === controller) olderHistoryRequest = null;
     if (!renderOwnsLoading && page === historyPageState) page.loading = false;
   }
 }
@@ -2235,6 +2242,8 @@ async function newSession() {
     historyBufferedLoading = false;
     if (historyPageAbort) historyPageAbort.abort();
     historyPageAbort = null;
+    olderHistoryRequest?.abort('session-changed');
+    olderHistoryRequest = null;
     historyPreviewSessionFile = null;
     sessionTotalCost = 0;
     lastInputTokens = 0;
@@ -2313,6 +2322,8 @@ async function switchSession(sessionFile, session = null, project = null) {
     const myGeneration = renderGeneration;
     if (historyPageAbort) historyPageAbort.abort();
     historyPageAbort = null;
+    olderHistoryRequest?.abort('session-changed');
+    olderHistoryRequest = null;
     historyPageState = null;
     historyBufferedEntries = [];
     historyBufferedLoading = false;
@@ -2521,6 +2532,8 @@ function handleMirrorSync(data) {
   historyBufferedLoading = false;
   if (historyPageAbort) historyPageAbort.abort();
   historyPageAbort = null;
+  olderHistoryRequest?.abort('session-changed');
+  olderHistoryRequest = null;
   messageRenderer.clear();
   toolCardRenderer.clear();
   sessionTotalCost = 0;
@@ -3098,10 +3111,15 @@ const toggleAutoCompact = document.getElementById('toggle-auto-compact');
 const btnThinkingLevel = document.getElementById('btn-thinking-level');
 const toggleShowThinking = document.getElementById('toggle-show-thinking');
 const tokenSaverBtn = document.getElementById('toggle-token-saver');
+const tokenSaverHeaderBtn = document.getElementById('token-saver-btn');
 
 function updateTokenSaverBtn() {
-  tokenSaverBtn.className = `settings-toggle${tokenSaverEnabled ? ' on' : ''}`;
-  tokenSaverBtn.title = t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff');
+  const buttons = [tokenSaverBtn, tokenSaverHeaderBtn].filter(Boolean);
+  for (const button of buttons) {
+    button.className = `${button === tokenSaverHeaderBtn ? 'token-saver-tag' : 'settings-toggle'}${tokenSaverEnabled ? ' on' : ''}`;
+    button.title = t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff');
+    button.setAttribute('aria-pressed', String(tokenSaverEnabled));
+  }
 }
 updateTokenSaverBtn();
 
@@ -3182,17 +3200,26 @@ settingsOverlay.addEventListener('click', closeSettings);
 
 // Token saver is intentionally conservative: it does not rewrite prompts or
 // truncate history. It disables reasoning tokens and restores the previous level.
-tokenSaverBtn.addEventListener('click', async () => {
-  const result = await rpcCommand({ type: 'set_token_saver', enabled: !tokenSaverEnabled }, t('tokenSaverWorking'));
-  if (result?.success && result.data) {
-    tokenSaverEnabled = !!result.data.enabled;
-    localStorage.setItem('tau-token-saver', String(tokenSaverEnabled));
-    currentThinkingLevel = result.data.thinkingLevel || currentThinkingLevel;
-    updateTokenSaverBtn();
-    updateThinkingBtn();
-    showToast(t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff'), 'success', 2200);
+async function toggleTokenSaver() {
+  const buttons = [tokenSaverBtn, tokenSaverHeaderBtn].filter(Boolean);
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    const result = await rpcCommand({ type: 'set_token_saver', enabled: !tokenSaverEnabled }, t('tokenSaverWorking'));
+    if (result?.success && result.data) {
+      tokenSaverEnabled = !!result.data.enabled;
+      localStorage.setItem('tau-token-saver', String(tokenSaverEnabled));
+      currentThinkingLevel = result.data.thinkingLevel || currentThinkingLevel;
+      updateTokenSaverBtn();
+      updateThinkingBtn();
+      showToast(t(tokenSaverEnabled ? 'tokenSaverOn' : 'tokenSaverOff'), 'success', 2200);
+    }
+  } finally {
+    buttons.forEach(button => { button.disabled = false; });
   }
-});
+}
+
+tokenSaverBtn?.addEventListener('click', toggleTokenSaver);
+tokenSaverHeaderBtn?.addEventListener('click', toggleTokenSaver);
 
 // Auto-compaction toggle
 toggleAutoCompact.addEventListener('click', async () => {

@@ -545,6 +545,50 @@ textarea {
   border-color: transparent;
 }
 
+/* ---------- token saver control ---------- */
+.token-saver-control {
+  position: relative;
+  min-width: 0;
+}
+
+.token-saver-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  max-width: 120px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 520;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.token-saver-tag:hover,
+.token-saver-tag.on {
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-solid));
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent-text);
+}
+
+.token-saver-tag:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.token-saver-tag::before {
+  content: '⌁';
+  margin-right: 4px;
+  font-size: 14px;
+  line-height: 1;
+}
 /* ---------- plan mode control ---------- */
 .plan-control {
   position: relative;
@@ -1543,6 +1587,16 @@ textarea {
     text-overflow: ellipsis;
   }
 
+  .token-saver-tag {
+    max-width: 82px;
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+
+  .token-saver-tag::before {
+    margin-right: 3px;
+  }
+
   .plan-tag {
     padding: 0 7px;
     font-size: 10px;
@@ -1643,6 +1697,12 @@ textarea {
   .plan-tag {
     max-width: 90px;
     padding-inline: 7px;
+    font-size: 10px;
+  }
+
+  .token-saver-tag {
+    max-width: 88px;
+    padding-inline: 5px;
     font-size: 10px;
   }
 
