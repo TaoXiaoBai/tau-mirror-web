@@ -227,6 +227,9 @@ export class WebSocketClient extends EventTarget {
         this.lastPongAt = Date.now();
         this.dispatchEvent(new CustomEvent('mirrorHelloOk', { detail: message }));
         break;
+      case 'plan_mode_state':
+        this.dispatchEvent(new CustomEvent('planModeState', { detail: message.data || message }));
+        break;
       default:
         console.warn('[WS] Unknown message type:', message.type);
     }

@@ -164,6 +164,9 @@ function humanizeError(error) {
   if (/Connection lost|disconnected/i.test(message)) return t('errDisconnected');
   if (/Session file is invalid|outside the Pi session directory/i.test(message)) return t('errBadSession');
   if (/No context available/i.test(message)) return t('errNoContext');
+  if (/Plan Mode extension did not respond|Plan Mode extension is not available/i.test(message)) return t('planUnavailableHint');
+  if (/There is no plan to execute yet/i.test(message)) return t('planNoPlanExecute');
+  if (/There is no plan to refine yet/i.test(message)) return t('planNoPlanRefine');
   if (/Unknown command:\s*(get_providers|save_provider|delete_provider|test_provider|save_model_context)/i.test(message)) return t('errNeedRestart');
   if (/Unknown command/i.test(message)) return t('errNeedRestart');
   return message;
@@ -443,6 +446,10 @@ wsClient.addEventListener('connected', () => {
   if (!availableModels.length) setTimeout(() => fetchModelInfo(), 80);
 });
 
+wsClient.addEventListener('planModeState', (event) => {
+  applyPlanModeState(event.detail);
+});
+
 wsClient.addEventListener('disconnected', () => {
   updateConnectionStatus('disconnected');
 });
@@ -515,8 +522,7 @@ function handleRPCEvent(event) {
       else if (event.error || event.errorMessage) showChatError(event.error || event.errorMessage);
       break;
     case 'plan_mode_state':
-      planModeActive = !!event.data?.enabled;
-      updatePlanModeBtn();
+      applyPlanModeState(event.data || event);
       break;
     case 'session_name':
       // Auto-title: update sidebar with new session name
@@ -1420,8 +1426,7 @@ async function loadModelInfo(options = {}) {
       currentThinkingLevel = stateData.data.thinkingLevel;
     }
     if (stateData.success && stateData.data?.planMode) {
-      planModeActive = !!stateData.data.planMode.enabled;
-      updatePlanModeBtn();
+      applyPlanModeState(stateData.data.planMode);
     }
 
     const model = getCurrentModel();
@@ -1463,6 +1468,7 @@ function toggleModelDropdown() {
 
 function openModelDropdown() {
   closeThinkingMenu();
+  closePlanModeMenu();
   if (!relayProviders.length) loadRelayProviders();
   modelDropdownMenu.innerHTML = '';
 
@@ -1777,36 +1783,178 @@ async function refreshModels() {
   modelRefreshBtn.classList.remove('spinning');
 }
 
-// Plan mode toggle (read-only exploration). Sends the same /plan command a
-// user would type; active state is tracked locally for the button.
-let planModeActive = false;
+// Plan Mode is a three-state backend-owned feature: off, read-only planning,
+// and plan execution. The browser never flips it optimistically.
+let planModeState = { available: false, mode: 'unavailable', enabled: false, executing: false, awaitingAction: false, todos: [] };
+let planModeBusy = false;
+const planControl = document.getElementById('plan-control');
 const planModeBtn = document.getElementById('plan-mode-btn');
+const planModeMenu = document.getElementById('plan-mode-menu');
+
+function normalizePlanModeState(value) {
+  const state = value && typeof value === 'object' ? value : {};
+  const mode = state.mode || (state.executing ? 'executing' : state.enabled ? 'planning' : state.available === false ? 'unavailable' : 'off');
+  return {
+    available: state.available !== false,
+    mode,
+    enabled: mode === 'planning',
+    executing: mode === 'executing',
+    awaitingAction: !!state.awaitingAction,
+    todos: Array.isArray(state.todos) ? state.todos : [],
+    error: state.error || '',
+  };
+}
+
+function applyPlanModeState(value) {
+  planModeState = normalizePlanModeState(value);
+  updatePlanModeBtn();
+  if (!planModeMenu?.classList.contains('hidden')) renderPlanModeMenu();
+}
+
+function planProgress() {
+  const total = planModeState.todos.length;
+  const done = planModeState.todos.filter(item => item?.completed).length;
+  return { done, total };
+}
+
 function updatePlanModeBtn() {
   if (!planModeBtn) return;
-  planModeBtn.textContent = planModeActive ? t('planOn') : t('planOff');
-  planModeBtn.classList.toggle('active', planModeActive);
-  planModeBtn.setAttribute('aria-pressed', String(planModeActive));
-  planModeBtn.title = planModeActive ? t('planHintOn') : t('planHintOff');
+  const { done, total } = planProgress();
+  let label = t('planOff');
+  let title = t('planHintOff');
+  if (!planModeState.available) {
+    label = t('planUnavailable');
+    title = t('planUnavailableHint');
+  } else if (planModeState.executing) {
+    label = total ? t('planExecutingProgress', { done, total }) : t('planExecuting');
+    title = t('planExecutingHint');
+  } else if (planModeState.enabled) {
+    label = planModeState.awaitingAction ? t('planReady') : t('planOn');
+    title = planModeState.awaitingAction ? t('planReadyHint') : t('planHintOn');
+  }
+  planModeBtn.textContent = planModeBusy ? t('planSwitching') : label;
+  planModeBtn.title = title;
+  planModeBtn.disabled = planModeBusy;
+  planModeBtn.classList.toggle('active', planModeState.enabled);
+  planModeBtn.classList.toggle('executing', planModeState.executing);
+  planModeBtn.classList.toggle('attention', planModeState.awaitingAction);
+  planModeBtn.classList.toggle('unavailable', !planModeState.available);
+  planModeBtn.setAttribute('aria-pressed', String(planModeState.enabled));
 }
+
+function closePlanModeMenu() {
+  planModeMenu?.classList.add('hidden');
+  planControl?.classList.remove('open');
+  planModeBtn?.setAttribute('aria-expanded', 'false');
+}
+
+function planMenuAction(action, label, detail, options = {}) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `plan-menu-item${options.primary ? ' primary' : ''}${options.danger ? ' danger' : ''}`;
+  button.setAttribute('role', 'menuitem');
+  button.innerHTML = `<span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span>${options.checked ? '<span class="thinking-check">✓</span>' : ''}`;
+  button.addEventListener('click', async event => {
+    event.stopPropagation();
+    if (action === 'refine') {
+      renderPlanRefineForm();
+      return;
+    }
+    closePlanModeMenu();
+    await setPlanModeAction(action);
+  });
+  return button;
+}
+
+function renderPlanRefineForm() {
+  if (!planModeMenu) return;
+  planModeMenu.innerHTML = `
+    <div class="plan-menu-head"><strong>${escapeHtml(t('planRefine'))}</strong><small>${escapeHtml(t('planRefineHint'))}</small></div>
+    <textarea class="plan-refine-input" id="plan-refine-input" rows="4" placeholder="${escapeHtml(t('planRefinePlaceholder'))}"></textarea>
+    <div class="plan-refine-actions">
+      <button type="button" class="plan-menu-back">${escapeHtml(t('cancel'))}</button>
+      <button type="button" class="plan-menu-submit">${escapeHtml(t('planSendRefine'))}</button>
+    </div>`;
+  const input = planModeMenu.querySelector('#plan-refine-input');
+  planModeMenu.querySelector('.plan-menu-back')?.addEventListener('click', event => {
+    event.stopPropagation();
+    renderPlanModeMenu();
+  });
+  planModeMenu.querySelector('.plan-menu-submit')?.addEventListener('click', async event => {
+    event.stopPropagation();
+    const instruction = input?.value.trim();
+    if (!instruction) {
+      input?.focus();
+      return;
+    }
+    closePlanModeMenu();
+    await setPlanModeAction('refine', { instruction });
+  });
+  requestAnimationFrame(() => input?.focus());
+}
+
+function renderPlanModeMenu() {
+  if (!planModeMenu) return;
+  planModeMenu.innerHTML = '';
+  const { done, total } = planProgress();
+  const head = document.createElement('div');
+  head.className = 'plan-menu-head';
+  head.innerHTML = `<strong>${escapeHtml(t('planMenuTitle'))}</strong><small>${escapeHtml(
+    !planModeState.available ? t('planUnavailableHint')
+      : planModeState.executing ? t('planProgressDetail', { done, total })
+      : planModeState.enabled ? t('planPlanningDetail') : t('planOffDetail')
+  )}</small>`;
+  planModeMenu.appendChild(head);
+
+  if (!planModeState.available) {
+    const retry = planMenuAction('get_state', t('planRetry'), t('planRetryHint'), { primary: true });
+    planModeMenu.appendChild(retry);
+    return;
+  }
+  if (planModeState.mode === 'off') {
+    planModeMenu.appendChild(planMenuAction('enable', t('planEnter'), t('planEnterHint'), { primary: true }));
+    return;
+  }
+  if (planModeState.executing) {
+    planModeMenu.appendChild(planMenuAction('enable', t('planBackPlanning'), t('planBackPlanningHint')));
+    planModeMenu.appendChild(planMenuAction('disable', t('planStop'), t('planStopHint'), { danger: true }));
+    return;
+  }
+  if (total > 0) {
+    planModeMenu.appendChild(planMenuAction('execute', t('planExecute'), t('planExecuteHint', { n: total }), { primary: true }));
+    planModeMenu.appendChild(planMenuAction('stay', t('planStay'), t('planStayHint'), { checked: !planModeState.awaitingAction }));
+    planModeMenu.appendChild(planMenuAction('refine', t('planRefine'), t('planRefineHint')));
+  }
+  planModeMenu.appendChild(planMenuAction('disable', t('planExit'), t('planExitHint'), { danger: true }));
+}
+
+async function setPlanModeAction(action, extra = {}) {
+  if (planModeBusy) return false;
+  planModeBusy = true;
+  updatePlanModeBtn();
+  const data = await rpcCommand({ type: 'set_plan_mode', action, ...extra }, t('togglingPlan'));
+  planModeBusy = false;
+  if (data?.success && data.data) {
+    applyPlanModeState(data.data);
+    if (action !== 'get_state') showToast(t('planStateUpdated'), 'success', 2000);
+    return true;
+  }
+  updatePlanModeBtn();
+  return false;
+}
+
 planModeBtn?.addEventListener('click', event => {
   event.stopPropagation();
-  planModeBtn.disabled = true;
-  // Optimistic update: flip local state immediately so the button reflects
-  // the toggle without waiting for the server round-trip.  The authoritative
-  // state from `plan_mode_state` will reconcile if it differs.
-  planModeActive = !planModeActive;
-  updatePlanModeBtn();
-  rpcCommand({ type: 'toggle_plan_mode' }, '正在切换规划模式…').then(data => {
-    if (!data?.success) {
-      // RPC failed — revert the optimistic update
-      planModeActive = !planModeActive;
-      updatePlanModeBtn();
-    }
-  }).finally(() => {
-    // Authoritative state arrives via the plan_mode_state event and updates
-    // the button; re-enable shortly after to allow the next toggle.
-    setTimeout(() => { if (planModeBtn) planModeBtn.disabled = false; }, 500);
-  });
+  closeModelDropdown();
+  closeThinkingMenu();
+  if (planModeMenu.classList.contains('hidden')) {
+    renderPlanModeMenu();
+    planModeMenu.classList.remove('hidden');
+    planControl.classList.add('open');
+    planModeBtn.setAttribute('aria-expanded', 'true');
+  } else {
+    closePlanModeMenu();
+  }
 });
 updatePlanModeBtn();
 
@@ -1818,6 +1966,7 @@ modelRefreshBtn?.addEventListener('click', event => {
 });
 
 function openThinkingMenu() {
+  closePlanModeMenu();
   const model = getCurrentModel();
   if (model?.reasoning === false) {
     showToast('当前模型为直答模式，无需设置思考强度', 'info', 2600);
@@ -1863,6 +2012,7 @@ thinkingBtn.addEventListener('click', event => {
 document.addEventListener('click', event => {
   if (!modelDropdown.contains(event.target)) closeModelDropdown();
   if (!thinkingControl.contains(event.target)) closeThinkingMenu();
+  if (planControl && !planControl.contains(event.target)) closePlanModeMenu();
 });
 
 // ═══════════════════════════════════════
@@ -1872,6 +2022,10 @@ document.addEventListener('click', event => {
 document.addEventListener('keydown', (e) => {
   // Escape — Abort streaming, or close sidebar on mobile
   if (e.key === 'Escape') {
+    if (planModeMenu && !planModeMenu.classList.contains('hidden')) {
+      closePlanModeMenu();
+      return;
+    }
     // Close palettes/panels first
     if (!settingsPanel.classList.contains('hidden')) {
       closeSettings();
@@ -2239,6 +2393,7 @@ function rememberSyncHint(data, entries = data.entries || []) {
 function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   isMirrorMode = true;
+  if (data.planMode) applyPlanModeState(data.planMode);
 
   // Track the active session
   mirrorActiveSessionFile = data.sessionFile || null;
@@ -2337,6 +2492,9 @@ wsClient.addEventListener('mirrorHelloOk', (e) => {
     currentThinkingLevel = data.thinkingLevel;
     updateThinkingBtn();
   }
+  if (data.planMode) applyPlanModeState(data.planMode);
+  // Older Tau backends omit Plan Mode from mirror_hello_ok.
+  else setPlanModeAction('get_state');
   lastSyncSessionFile = data.sessionFile || lastSyncSessionFile;
   lastSyncEntryCount = data.entryCount ?? lastSyncEntryCount;
   lastSyncEntrySig = data.entrySig || lastSyncEntrySig;

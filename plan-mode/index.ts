@@ -28,7 +28,16 @@ interface PlanModeState {
 	enabled: boolean;
 	todos?: TodoItem[];
 	executing?: boolean;
+	awaitingAction?: boolean;
 	toolsBeforePlanMode?: string[];
+}
+
+type PlanModeAction = "get_state" | "enable" | "disable" | "toggle" | "execute" | "stay" | "refine";
+
+interface PlanModeControl {
+	action?: PlanModeAction;
+	requestId?: string;
+	instruction?: string;
 }
 
 // Type guard for assistant messages
@@ -48,16 +57,23 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
 	let executionMode = false;
 	let todoItems: TodoItem[] = [];
+	let awaitingAction = false;
 	let toolsBeforePlanMode: string[] | undefined;
 	let activeCtx: ExtensionContext | null = null;
+	let webClientCount = 0;
 
-	// Publish state to the Tau mirror so the web toggle can reflect it without
-	// typing "/plan" into the chat.
-	function emitPlanModeState(): void {
+	// Publish a complete, authoritative snapshot. requestId lets Tau distinguish
+	// a confirmed state transition from an unrelated progress update.
+	function emitPlanModeState(requestId?: string, error?: string): void {
 		pi.events.emit("tau-plan-mode:state", {
+			available: true,
+			mode: executionMode ? "executing" : planModeEnabled ? "planning" : "off",
 			enabled: planModeEnabled,
 			executing: executionMode,
-			todos: todoItems,
+			awaitingAction,
+			todos: todoItems.map((item) => ({ ...item })),
+			requestId,
+			...(error ? { error } : {}),
 		});
 	}
 
@@ -132,24 +148,31 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			enabled: planModeEnabled,
 			todos: todoItems,
 			executing: executionMode,
+			awaitingAction,
 			toolsBeforePlanMode,
 		});
 	}
 
-	function togglePlanMode(ctx: ExtensionContext | null): void {
-		planModeEnabled = !planModeEnabled;
+	function setPlanMode(enabled: boolean, ctx: ExtensionContext | null, notify = true): void {
+		if (enabled === planModeEnabled && !executionMode) return;
+		planModeEnabled = enabled;
 		executionMode = false;
-		todoItems = [];
+		awaitingAction = false;
+		if (!enabled) todoItems = [];
 
-		if (planModeEnabled) {
+		if (enabled) {
 			enablePlanModeTools();
-			ctx?.ui.notify?.("Plan mode enabled. Built-in write tools disabled.");
+			if (notify) ctx?.ui.notify?.("Plan mode enabled. Built-in write tools disabled.");
 		} else {
 			restoreNormalModeTools();
-			ctx?.ui.notify?.("Plan mode disabled. Full access restored.");
+			if (notify) ctx?.ui.notify?.("Plan mode disabled. Full access restored.");
 		}
 		updateStatus(ctx);
 		persistState();
+	}
+
+	function togglePlanMode(ctx: ExtensionContext | null): void {
+		setPlanMode(!planModeEnabled || executionMode, ctx);
 	}
 
 	pi.registerCommand("plan", {
@@ -174,11 +197,55 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (ctx) => togglePlanMode(ctx),
 	});
 
-	// Tau web toggle: switch plan mode without sending a visible chat message.
-	// Tau web toggle: switch plan mode without sending a visible chat message.
-	// Works even when no TUI context is active (e.g. mirror web UI only).
-	pi.events.on("tau-plan-mode:toggle", () => {
-		togglePlanMode(activeCtx);
+	// Tau web control protocol. Actions are idempotent and every request receives
+	// an authoritative state response, avoiding front/back-end toggle races.
+	pi.events.on("tau-plan-mode:clients", (value: unknown) => {
+		webClientCount = Math.max(0, Number(value) || 0);
+	});
+	pi.events.on("tau-plan-mode:request-state", (payload: unknown) => {
+		emitPlanModeState((payload as { requestId?: string } | undefined)?.requestId);
+	});
+	pi.events.on("tau-plan-mode:toggle", () => togglePlanMode(activeCtx));
+	pi.events.on("tau-plan-mode:control", (payload: unknown) => {
+		const control = (payload || {}) as PlanModeControl;
+		const action = control.action || "get_state";
+		let error = "";
+		try {
+			if (action === "enable") setPlanMode(true, activeCtx, false);
+			else if (action === "disable") setPlanMode(false, activeCtx, false);
+			else if (action === "toggle") togglePlanMode(activeCtx);
+			else if (action === "stay") {
+				if (!planModeEnabled) throw new Error("Plan mode is not active");
+				awaitingAction = false;
+				updateStatus(activeCtx);
+				persistState();
+			} else if (action === "execute") {
+				if (!planModeEnabled || todoItems.length === 0) throw new Error("There is no plan to execute yet");
+				const firstTodoItem = todoItems[0];
+				planModeEnabled = false;
+				executionMode = true;
+				awaitingAction = false;
+				restoreNormalModeTools();
+				updateStatus(activeCtx);
+				persistState();
+				const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
+				pi.sendMessage({
+					customType: "plan-mode-execute",
+					content: `Execute the plan.\n\nRemaining steps:\n${remainingList}\n\nStart with: ${firstTodoItem.text}\nAfter completing a step, include a [DONE:n] tag in your response.`,
+					display: true,
+				}, { triggerTurn: true, deliverAs: "followUp" });
+			} else if (action === "refine") {
+				const instruction = String(control.instruction || "").trim();
+				if (!planModeEnabled || todoItems.length === 0) throw new Error("There is no plan to refine yet");
+				if (!instruction) throw new Error("Refinement instructions are empty");
+				awaitingAction = false;
+				persistState();
+				pi.sendUserMessage(`Refine the current plan using these instructions:\n${instruction}`, { deliverAs: "followUp" });
+			}
+		} catch (err: any) {
+			error = err?.message || String(err);
+		}
+		emitPlanModeState(control.requestId, error || undefined);
 	});
 
 	// Block destructive bash commands in plan mode
@@ -290,6 +357,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 					{ triggerTurn: false },
 				);
 				executionMode = false;
+				awaitingAction = false;
 				todoItems = [];
 				updateStatus(ctx);
 				persistState(); // Save cleared state so resume doesn't restore old execution mode
@@ -309,7 +377,13 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		}
 
 		if (todoItems.length === 0) return;
+		awaitingAction = true;
+		updateStatus(ctx);
 		persistState();
+
+		// The web owns this choice while connected. It renders the same actions
+		// without relying on the terminal-only ctx.ui.select implementation.
+		if (webClientCount > 0) return;
 
 		// Show plan steps and prompt for next action
 		const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
@@ -331,6 +405,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 			planModeEnabled = false;
 			executionMode = true;
+			awaitingAction = false;
 			restoreNormalModeTools();
 			updateStatus(ctx);
 			persistState();
@@ -351,7 +426,10 @@ After completing a step, include a [DONE:n] tag in your response.`;
 		} else if (choice === "Refine the plan") {
 			const refinement = await ctx.ui.editor("Refine the plan:", "");
 			if (refinement?.trim()) {
+				awaitingAction = false;
+				persistState();
 				pi.sendMessage(planTodoListMessage, { deliverAs: "followUp" });
+
 				pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
 			}
 		}
@@ -375,6 +453,7 @@ After completing a step, include a [DONE:n] tag in your response.`;
 			planModeEnabled = planModeEntry.data.enabled ?? planModeEnabled;
 			todoItems = planModeEntry.data.todos ?? todoItems;
 			executionMode = planModeEntry.data.executing ?? executionMode;
+			awaitingAction = planModeEntry.data.awaitingAction ?? awaitingAction;
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 		}
 

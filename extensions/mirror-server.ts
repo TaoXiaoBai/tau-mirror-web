@@ -1006,8 +1006,9 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Pending RPC-style requests from browser (id -> resolver)
-  const pendingRequests = new Map<string, (response: any) => void>();
+  // Pending authoritative Plan Mode requests. The plan extension replies on the
+  // shared event bus with the same requestId; Tau never guesses the next state.
+  const pendingPlanRequests = new Map<string, (state: any) => void>();
 
   // ═══════════════════════════════════════
   // Helper: send to one client
@@ -1030,14 +1031,41 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Plan mode mirror state. The official plan-mode extension publishes its
-  // state on the shared event bus; cache it for get_state and relay updates to
-  // every browser client so the web toggle stays in sync.
-  let planModeState: any = null;
+  // Plan Mode state is owned by the plan-mode extension. Ask it explicitly on
+  // connection/session changes because its startup broadcast may precede Tau's
+  // listener. Control requests resolve only after an authoritative reply.
+  let planModeState: any = { available: false, mode: "unavailable", enabled: false, executing: false, awaitingAction: false, todos: [] };
   pi.events.on("tau-plan-mode:state", (state: any) => {
-    planModeState = state;
-    broadcast({ type: "plan_mode_state", data: state });
+    planModeState = state && typeof state === "object"
+      ? { available: true, mode: state.executing ? "executing" : state.enabled ? "planning" : "off", awaitingAction: false, todos: [], ...state }
+      : planModeState;
+    broadcast({ type: "plan_mode_state", data: planModeState });
+    const requestId = String(state?.requestId || "");
+    const resolve = requestId ? pendingPlanRequests.get(requestId) : undefined;
+    if (resolve) {
+      pendingPlanRequests.delete(requestId);
+      resolve(planModeState);
+    }
   });
+
+  function requestPlanMode(action: string, extra: Record<string, any> = {}, timeoutMs = 1400): Promise<any> {
+    const requestId = randomBytes(8).toString("hex");
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingPlanRequests.delete(requestId);
+        resolve({ available: false, mode: "unavailable", enabled: false, executing: false, awaitingAction: false, todos: [], error: "Plan Mode extension did not respond" });
+      }, timeoutMs);
+      pendingPlanRequests.set(requestId, (state) => {
+        clearTimeout(timer);
+        resolve(state);
+      });
+      pi.events.emit("tau-plan-mode:control", { action, requestId, ...extra });
+    });
+  }
+
+  function publishPlanClientCount() {
+    pi.events.emit("tau-plan-mode:clients", clients.size);
+  }
 
   let mirrorUrl = "";
   let tailscaleUrl = "";
@@ -1055,6 +1083,7 @@ export default function (pi: ExtensionAPI) {
         client.close();
       }
       clients.clear();
+      publishPlanClientCount();
       wss.close();
       wss = null;
     }
@@ -1191,6 +1220,14 @@ export default function (pi: ExtensionAPI) {
     userMessages = [];
     // Update instance registry with new session file
     updateInstanceSession(ctx.sessionManager.getSessionFile() || "");
+    // Extensions receive session_start in load order. Defer one tick so the
+    // Plan extension has restored this session before Tau requests its state.
+    setTimeout(() => {
+      requestPlanMode("get_state").then((state) => {
+        planModeState = state;
+        broadcast({ type: "plan_mode_state", data: state });
+      });
+    }, 0);
   });
 
   pi.on("turn_start", async (_event, _ctx) => {
@@ -1338,6 +1375,7 @@ export default function (pi: ExtensionAPI) {
       sessionFile,
       isStreaming: !ctx.isIdle(),
       contextUsage,
+      planMode: planModeState,
       entryCount: entries.length,
       entrySig: entrySignature(entries[entries.length - 1]),
     };
@@ -1393,6 +1431,7 @@ export default function (pi: ExtensionAPI) {
               model: ctx.model,
               thinkingLevel: pi.getThinkingLevel(),
               isStreaming: !ctx.isIdle(),
+              planMode: planModeState,
               entryCount,
               entrySig,
             });
@@ -1470,11 +1509,36 @@ export default function (pi: ExtensionAPI) {
           break;
         }
 
+        case "get_plan_mode": {
+          const state = await requestPlanMode("get_state");
+          planModeState = state;
+          sendTo(ws, success("get_plan_mode", state));
+          break;
+        }
+
+        case "set_plan_mode":
         case "toggle_plan_mode": {
-          // The official plan-mode extension listens on the shared event bus.
-          // Emit instead of sending "/plan" as a visible chat message.
-          pi.events.emit("tau-plan-mode:toggle");
-          sendTo(ws, success("toggle_plan_mode", {}));
+          if (!ctx) {
+            sendTo(ws, error(command.type, "No context available"));
+            break;
+          }
+          const action = command.type === "toggle_plan_mode" ? "toggle" : String(command.action || "get_state");
+          if (!ctx.isIdle() && action !== "get_state") {
+            sendTo(ws, error(command.type, "Pi is busy; wait until the current response finishes"));
+            break;
+          }
+          const allowed = new Set(["get_state", "enable", "disable", "toggle", "execute", "stay", "refine"]);
+          if (!allowed.has(action)) {
+            sendTo(ws, error(command.type, "Unknown Plan Mode action"));
+            break;
+          }
+          const state = await requestPlanMode(action, { instruction: String(command.instruction || "") });
+          planModeState = state;
+          if (!state.available || state.error) {
+            sendTo(ws, error(command.type, state.error || "Plan Mode extension is not available"));
+          } else {
+            sendTo(ws, success(command.type, state));
+          }
           break;
         }
 
@@ -2903,6 +2967,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     wss.on("connection", (ws) => {
       console.log("[Mirror] Browser client connected");
       clients.add(ws);
+      publishPlanClientCount();
+      requestPlanMode("get_state").then((state) => {
+        planModeState = state;
+        sendTo(ws, { type: "plan_mode_state", data: state });
+      });
       (ws as any).isAlive = true;
 
       ws.on("pong", () => {
@@ -2939,11 +3008,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           (ws as any).helloWait = null;
         }
         clients.delete(ws);
+        publishPlanClientCount();
       });
 
       ws.on("error", (e) => {
         console.error("[Mirror] Client error:", e);
         clients.delete(ws);
+        publishPlanClientCount();
       });
     });
 
@@ -2952,12 +3023,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       for (const client of clients) {
         if (client.readyState !== WebSocket.OPEN) {
           clients.delete(client);
+          publishPlanClientCount();
           continue;
         }
 
         if (!(client as any).isAlive) {
           try { client.terminate(); } catch {}
           clients.delete(client);
+          publishPlanClientCount();
           continue;
         }
 
