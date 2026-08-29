@@ -93,6 +93,7 @@ export class MessageRenderer {
     this._thinkingTimers = new Map();
     this._lazyThinking = new Map();
     this._bottomScrollFrame = null;
+    this._scrollEpoch = 0;
     this._streamingPaintTimers = new Map();
     this._mountTarget = null;
 
@@ -530,6 +531,7 @@ export class MessageRenderer {
 
   cancelAutoScroll() {
     this.isNearBottom = false;
+    this._scrollEpoch++;
     if (this._bottomScrollFrame !== null) {
       cancelAnimationFrame(this._bottomScrollFrame);
       this._bottomScrollFrame = null;
@@ -538,10 +540,11 @@ export class MessageRenderer {
 
   scrollToBottom() {
     if (!this.isNearBottom || this._bottomScrollFrame !== null) return;
+    const epoch = this._scrollEpoch;
     this._bottomScrollFrame = requestAnimationFrame(() => {
       this._bottomScrollFrame = null;
-      // The user may have started scrolling after this frame was queued.
-      if (!this.isNearBottom) return;
+      // A user scroll invalidates every previously queued follow operation.
+      if (!this.isNearBottom || epoch !== this._scrollEpoch) return;
       // Programmatic follow must never use the page's smooth scrolling. A
       // smooth animation can survive completion and pull the viewport down
       // after the user starts scrolling upward.

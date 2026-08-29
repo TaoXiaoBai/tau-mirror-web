@@ -335,6 +335,7 @@ let userScrollLock = false;
 
 function suspendMessageAutoScroll() {
   userScrollLock = true;
+  previousMessagesScrollTop = messagesContainer.scrollTop;
   messageRenderer.cancelAutoScroll();
   isScrolledUp = true;
 }
@@ -452,6 +453,7 @@ messagesContainer.addEventListener('touchmove', (event) => {
 
 function jumpMessagesToBottom() {
   userScrollLock = false;
+  messageRenderer.isNearBottom = true;
   const previous = messagesContainer.style.scrollBehavior;
   messagesContainer.style.scrollBehavior = 'auto';
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
