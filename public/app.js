@@ -330,6 +330,14 @@ setInterval(() => {
 
 let scrollBtnPending = false;
 let previousMessagesScrollTop = 0;
+let historyPrependInProgress = false;
+let userScrollLock = false;
+
+function suspendMessageAutoScroll() {
+  userScrollLock = true;
+  messageRenderer.cancelAutoScroll();
+  isScrolledUp = true;
+}
 async function loadOlderHistoryPage() {
   if (historyBufferedLoading || historyPageState?.loading) return;
   if (historyBufferedEntries.length > 0) {
@@ -391,12 +399,28 @@ messagesContainer.addEventListener('scroll', () => {
     const threshold = 150;
     const currentTop = messagesContainer.scrollTop;
     const movingUp = currentTop + 8 < previousMessagesScrollTop;
+    if (movingUp && !historyPrependInProgress) suspendMessageAutoScroll();
     previousMessagesScrollTop = currentTop;
     if (movingUp && currentTop < 500) loadOlderHistoryPage();
     const atBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < threshold;
-    messageRenderer.isNearBottom = atBottom;
-    isScrolledUp = !atBottom;
-    if (atBottom) {
+    // Once the user intentionally moves upward, a layout/streaming scroll
+    // event must not be mistaken for permission to resume auto-follow. Only
+    // reaching the real bottom again releases this lock.
+    if (userScrollLock && !atBottom) {
+      messageRenderer.isNearBottom = false;
+      isScrolledUp = true;
+    } else if (atBottom && !historyPrependInProgress) {
+      userScrollLock = false;
+      messageRenderer.isNearBottom = true;
+      isScrolledUp = false;
+      scrollBottomBtn.classList.add('hidden');
+      scrollBottomBadge.classList.add('hidden');
+      hasNewWhileScrolled = false;
+    } else {
+      messageRenderer.isNearBottom = false;
+      isScrolledUp = true;
+    }
+    if (messageRenderer.isNearBottom) {
       scrollBottomBtn.classList.add('hidden');
       scrollBottomBadge.classList.add('hidden');
       hasNewWhileScrolled = false;
@@ -407,10 +431,20 @@ messagesContainer.addEventListener('scroll', () => {
 }, { passive: true });
 
 messagesContainer.addEventListener('wheel', (event) => {
+  if (event.deltaY < 0) suspendMessageAutoScroll();
   if (event.deltaY < 0 && messagesContainer.scrollTop < 500) loadOlderHistoryPage();
 }, { passive: true });
 
+messagesContainer.addEventListener('touchstart', () => {
+  suspendMessageAutoScroll();
+}, { passive: true });
+
+messagesContainer.addEventListener('pointerdown', () => {
+  suspendMessageAutoScroll();
+}, { passive: true });
+
 function jumpMessagesToBottom() {
+  userScrollLock = false;
   const previous = messagesContainer.style.scrollBehavior;
   messagesContainer.style.scrollBehavior = 'auto';
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -2749,13 +2783,16 @@ function renderSessionHistory(entries, options = {}) {
     const anchor = beforeNode || messagesContainer.firstChild;
     const anchorTop = anchor?.getBoundingClientRect().top;
     const previousAnchorMode = messagesContainer.style.overflowAnchor;
+    historyPrependInProgress = true;
     messagesContainer.style.overflowAnchor = 'none';
     messagesContainer.insertBefore(fragment, anchor || null);
     if (anchor && Number.isFinite(anchorTop)) {
       messagesContainer.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+      previousMessagesScrollTop = messagesContainer.scrollTop;
     }
     requestAnimationFrame(() => {
       messagesContainer.style.overflowAnchor = previousAnchorMode;
+      historyPrependInProgress = false;
     });
   }
 

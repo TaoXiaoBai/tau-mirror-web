@@ -1756,6 +1756,10 @@ export default function (pi: ExtensionAPI) {
 
         // ─── Thinking ───
         case "cycle_thinking_level": {
+          if (tokenSaverEnabled) {
+            sendTo(ws, success("cycle_thinking_level", { level: "off" }));
+            break;
+          }
           const levels = ["off", "minimal", "low", "medium", "high"];
           const current = pi.getThinkingLevel();
           const idx = levels.indexOf(current);
@@ -1772,6 +1776,10 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "set_thinking_level": {
+          if (tokenSaverEnabled) {
+            sendTo(ws, success("set_thinking_level", { level: "off" }));
+            break;
+          }
           const defaults = captureDefaultPreferences();
           try {
             pi.setThinkingLevel(command.level);

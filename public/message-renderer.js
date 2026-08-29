@@ -366,6 +366,15 @@ export class MessageRenderer {
       contentDiv.appendChild(textNode);
     }
     textNode.dataset.raw = (textNode.dataset.raw || '') + delta;
+    const length = textNode.dataset.raw.length;
+    const now = performance.now();
+    const lastPaint = Number(textNode.dataset.lastPaintAt || 0);
+    // Repainting an unfinished giant paragraph on every animation frame is
+    // near-quadratic. Keep short answers fully live, then progressively cap
+    // markdown paint frequency while retaining every raw delta for final paint.
+    const minInterval = length > 100000 ? 140 : length > 40000 ? 75 : length > 12000 ? 32 : 0;
+    if (minInterval && now - lastPaint < minInterval) return;
+    textNode.dataset.lastPaintAt = String(now);
     this._paintStreamingMarkdown(textNode);
   }
 
@@ -497,10 +506,21 @@ export class MessageRenderer {
     return div.innerHTML;
   }
 
+  cancelAutoScroll() {
+    this.isNearBottom = false;
+    if (this._bottomScrollFrame !== null) {
+      cancelAnimationFrame(this._bottomScrollFrame);
+      this._bottomScrollFrame = null;
+    }
+  }
+
   scrollToBottom() {
     if (!this.isNearBottom || this._bottomScrollFrame !== null) return;
     this._bottomScrollFrame = requestAnimationFrame(() => {
       this._bottomScrollFrame = null;
+      // The user may have started scrolling after this frame was queued.
+      // Re-check here so an old streaming/tool update cannot snap them down.
+      if (!this.isNearBottom) return;
       this.container.scrollTop = this.container.scrollHeight;
     });
   }
