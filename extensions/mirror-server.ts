@@ -422,6 +422,16 @@ export default function (pi: ExtensionAPI) {
     const relative = path.relative(root, resolved);
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
     if (path.extname(resolved).toLowerCase() !== ".jsonl" || !fs.existsSync(resolved)) return null;
+    // Reject symlink escapes: the real target must still live inside the
+    // sessions directory. Keep returning the resolved (not real) path so the
+    // session replacement uses the path the browser actually selected.
+    try {
+      const real = fs.realpathSync(resolved);
+      const realRelative = path.relative(root, real);
+      if (!realRelative || realRelative.startsWith("..") || path.isAbsolute(realRelative)) return null;
+    } catch {
+      return null;
+    }
     return resolved;
   }
 
@@ -491,8 +501,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("tau-new", {
     description: "Create a new Pi session selected from Tau",
     handler: async (_args, ctx) => {
-      await ctx.waitForIdle();
-      await ctx.newSession();
+      try {
+        await ctx.waitForIdle();
+        await ctx.newSession();
+      } catch (e: any) {
+        console.error("[Mirror] New session failed:", e?.message || e);
+        ctx.ui.notify(`Tau 新建会话失败：${e?.message || e}`, "error");
+      }
     },
   });
 
@@ -511,8 +526,13 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Tau 无法继续该会话：会话路径无效", "error");
         return;
       }
-      await ctx.waitForIdle();
-      await ctx.switchSession(sessionPath);
+      try {
+        await ctx.waitForIdle();
+        await ctx.switchSession(sessionPath);
+      } catch (e: any) {
+        console.error("[Mirror] Session switch failed:", e?.message || e);
+        ctx.ui.notify(`Tau 切换会话失败：${e?.message || e}`, "error");
+      }
     },
   });
 
@@ -1106,14 +1126,21 @@ export default function (pi: ExtensionAPI) {
     }
     if (wss) {
       for (const client of clients) {
-        client.close();
+        // Terminate immediately (no close handshake) so the underlying sockets
+        // release the listening port before the replacement server rebinds it.
+        try { client.terminate(); } catch { try { client.close(); } catch {} }
       }
       clients.clear();
       publishPlanClientCount();
-      wss.close();
+      try { wss.close(); } catch {}
       wss = null;
     }
     if (server) {
+      // Release the port promptly after a session switch. Without this the
+      // next server can hit EADDRINUSE and drift to another port, breaking
+      // the browser reconnect (it dials the original port).
+      try { (server as any).closeAllConnections?.(); } catch {}
+      try { (server as any).closeIdleConnections?.(); } catch {}
       server.close();
       server = null;
     }
@@ -3125,30 +3152,45 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       }
     }, 20000);
 
-    const tryListen = (port: number, maxAttempts = 10) => {
+    const tryListen = (port: number, maxAttempts = 10, samePortRetries = 5) => {
       server!.listen(port, HOST, () => {
         onListening(port);
       });
       server!.once("error", (err: any) => {
-        if (err.code === "EADDRINUSE" && port < PORT + maxAttempts) {
-          // Check if a stale Tau instance owns this port and kill it
-          const instances = getRunningInstances();
-          const stale = instances.find(i => i.port === port && i.pid !== process.pid);
-          if (stale && isZombieProcess(stale.pid)) {
-            console.log(`[Mirror] Port ${port} in use by stale Tau instance (PID ${stale.pid}), killing...`);
-            try { process.kill(stale.pid, "SIGTERM"); } catch {}
-            // Wait briefly then retry the same port
-            setTimeout(() => {
-              server!.removeAllListeners("error");
-              tryListen(port, maxAttempts);
-            }, 500);
-            return;
-          }
+        if (err.code !== "EADDRINUSE") {
+          console.error(`[Mirror] Failed to start server:`, err.message);
+          return;
+        }
+        // Check if a stale Tau instance owns this port and kill it
+        const instances = getRunningInstances();
+        const stale = instances.find(i => i.port === port && i.pid !== process.pid);
+        if (stale && isZombieProcess(stale.pid)) {
+          console.log(`[Mirror] Port ${port} in use by stale Tau instance (PID ${stale.pid}), killing...`);
+          try { process.kill(stale.pid, "SIGTERM"); } catch {}
+          // Wait briefly then retry the same port
+          setTimeout(() => {
+            server!.removeAllListeners("error");
+            tryListen(port, maxAttempts, samePortRetries);
+          }, 500);
+          return;
+        }
+        // A Tau server in this same process may still be releasing the port
+        // after a session switch. Retry the original port before drifting to
+        // a new one; the browser reconnects to the original port.
+        if (port === PORT && samePortRetries > 0) {
+          console.log(`[Mirror] Port ${port} busy, retrying same port (${samePortRetries} attempts left)...`);
+          setTimeout(() => {
+            server!.removeAllListeners("error");
+            tryListen(port, maxAttempts, samePortRetries - 1);
+          }, 150);
+          return;
+        }
+        if (port < PORT + maxAttempts) {
           console.log(`[Mirror] Port ${port} in use, trying ${port + 1}...`);
           server!.removeAllListeners("error");
-          tryListen(port + 1, maxAttempts);
+          tryListen(port + 1, maxAttempts, samePortRetries);
         } else {
-          console.error(`[Mirror] Failed to start server:`, err.message);
+          console.error(`[Mirror] Failed to start server: ${err.message} (port ${port})`);
         }
       });
     };
