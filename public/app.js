@@ -1376,6 +1376,19 @@ function getManageableRelays() {
 }
 
 const THINKING_LEVELS = thinkingLevels;
+const THINKING_LEVEL_DISPLAY = {
+  off: 'OFF',
+  minimal: 'MIN',
+  low: 'LOW',
+  medium: 'MED',
+  high: 'HIGH',
+  xhigh: 'XHIGH',
+  max: 'MAX',
+};
+
+function thinkingLevelDisplay(level) {
+  return THINKING_LEVEL_DISPLAY[level] || String(level || 'OFF').toUpperCase();
+}
 
 const MODEL_LABELS = {
   'OAI/gpt-5.6-sol-thinking-none': 'GPT-5.6 Sol · 直答',
@@ -1465,10 +1478,13 @@ function updateThinkingBtn() {
   const model = getCurrentModel();
   const unsupported = model?.reasoning === false;
   const level = THINKING_LEVELS().find(item => item.id === currentThinkingLevel) || THINKING_LEVELS()[0];
-  thinkingBtn.textContent = unsupported ? t('thinkNA') : t('thinkLabel', { label: level.label });
+  const levelCode = unsupported ? 'N/A' : thinkingLevelDisplay(level.id);
+  thinkingBtn.innerHTML = `<span class="thinking-tag-prefix">THINK</span><strong class="thinking-tag-level">${levelCode}</strong>`;
+  thinkingBtn.dataset.level = unsupported ? 'na' : level.id;
   thinkingBtn.classList.toggle('off', currentThinkingLevel === 'off' || unsupported);
   thinkingBtn.classList.toggle('unavailable', unsupported);
-  thinkingBtn.title = unsupported ? t('thinkTitleNA') : t('thinkTitle', { label: level.label });
+  thinkingBtn.title = unsupported ? t('thinkTitleNA') : t('thinkTitle', { label: `${levelCode} · ${level.label}` });
+  thinkingBtn.setAttribute('aria-label', unsupported ? t('thinkTitleNA') : t('thinkTitle', { label: levelCode }));
   thinkingBtn.setAttribute('aria-disabled', String(unsupported));
 }
 
@@ -2227,14 +2243,18 @@ function openThinkingMenu() {
     item.className = `thinking-menu-item${level.id === currentThinkingLevel ? ' active' : ''}`;
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(level.id === currentThinkingLevel));
-    item.innerHTML = `<span><strong>${level.label}</strong><small>${level.hint}</small></span><span class="thinking-check">${level.id === currentThinkingLevel ? '✓' : ''}</span>`;
+    const levelCode = thinkingLevelDisplay(level.id);
+    item.dataset.level = level.id;
+    item.innerHTML = `<span class="thinking-level-code">${levelCode}</span><span class="thinking-menu-copy"><strong>${level.label}</strong><small>${level.hint}</small></span><span class="thinking-check">${level.id === currentThinkingLevel ? '✓' : ''}</span>`;
     item.addEventListener('click', async () => {
       closeThinkingMenu();
-      const data = await rpcCommand({ type: 'set_thinking_level', level: level.id }, `正在设置为${level.label}思考…`);
+      const data = await rpcCommand({ type: 'set_thinking_level', level: level.id }, `正在设置为 ${levelCode}…`);
       if (data?.success) {
-        currentThinkingLevel = level.id;
+        // Pi may clamp unsupported levels for a model. Display the effective
+        // level returned by the backend, not merely the requested one.
+        currentThinkingLevel = data.data?.level || level.id;
         updateThinkingBtn();
-        showToast(`思考强度：${level.label}`, 'success', 2200);
+        showToast(`思考强度：${thinkingLevelDisplay(currentThinkingLevel)}`, 'success', 2200);
       }
     });
     thinkingMenu.appendChild(item);

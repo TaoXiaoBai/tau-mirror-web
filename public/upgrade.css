@@ -521,15 +521,55 @@ textarea {
 }
 
 .thinking-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   height: 28px;
-  padding: 0 8px;
+  padding: 0 6px 0 8px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--text-dim);
   font-family: inherit;
-  font-size: 11px;
-  font-weight: 520;
+  line-height: 1;
+}
+
+.thinking-tag-prefix {
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .07em;
+}
+
+.thinking-tag-level {
+  min-width: 34px;
+  padding: 3px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .035em;
+  text-align: center;
+}
+
+.thinking-tag[data-level="off"] .thinking-tag-level,
+.thinking-tag[data-level="na"] .thinking-tag-level {
+  border-color: var(--tau-divider);
+  background: var(--tau-surface-hover);
+  color: var(--text-dim);
+}
+
+.thinking-tag[data-level="high"] .thinking-tag-level {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.thinking-tag[data-level="xhigh"] .thinking-tag-level,
+.thinking-tag[data-level="max"] .thinking-tag-level {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text-primary);
 }
 
 .thinking-tag:hover,
@@ -802,10 +842,39 @@ textarea {
   border-color: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-.thinking-menu-item > span:first-child {
+.thinking-level-code {
+  flex: 0 0 45px;
+  padding: 4px 5px;
+  border: 1px solid var(--tau-divider);
+  border-radius: 6px;
+  background: var(--tau-surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .04em;
+  text-align: center;
+}
+
+.thinking-menu-item[data-level="high"] .thinking-level-code,
+.thinking-menu-item[data-level="xhigh"] .thinking-level-code,
+.thinking-menu-item[data-level="max"] .thinking-level-code {
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-text);
+}
+
+.thinking-menu-item[data-level="max"] .thinking-level-code {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--text-primary);
+}
+
+.thinking-menu-copy {
   display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
+  margin-left: 9px;
 }
 
 .thinking-menu-item strong {
@@ -1584,7 +1653,6 @@ textarea {
   .thinking-tag {
     max-width: 92px;
     overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .token-saver-tag {
@@ -1690,8 +1758,18 @@ textarea {
 @media (max-width: 430px) {
   .thinking-tag {
     max-width: 72px;
-    padding-inline: 7px;
-    font-size: 10px;
+    gap: 3px;
+    padding-inline: 5px;
+  }
+
+  .thinking-tag-prefix {
+    font-size: 8px;
+  }
+
+  .thinking-tag-level {
+    min-width: 30px;
+    padding-inline: 3px;
+    font-size: 9px;
   }
 
   .plan-tag {
