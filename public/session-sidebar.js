@@ -44,18 +44,25 @@ export class SessionSidebar {
     this.render();
   }
 
-  async loadSessions() {
+  async loadSessions(options = {}) {
     try {
-      this.container.innerHTML = Array.from({length: 6}, () =>
-        '<div class="session-skeleton"><div class="session-skeleton-title"></div><div class="session-skeleton-meta"></div></div>'
-      ).join('');
-      const res = await fetch('/api/sessions');
+      if (!options.quiet) {
+        this.container.innerHTML = Array.from({length: 6}, () =>
+          '<div class="session-skeleton"><div class="session-skeleton-title"></div><div class="session-skeleton-meta"></div></div>'
+        ).join('');
+      }
+      const res = await fetch('/api/sessions', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       this.projects = data.projects || [];
       this.render();
+      return true;
     } catch (error) {
       console.error('[Sidebar] Failed to load sessions:', error);
-      this.container.innerHTML = '<div class="session-loading">Failed to load sessions</div>';
+      if (!options.quiet) {
+        this.container.innerHTML = '<div class="session-loading">Failed to load sessions</div>';
+      }
+      return false;
     }
   }
 
@@ -311,7 +318,8 @@ export class SessionSidebar {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filePath: session.filePath, name: newName }),
-          signal: AbortSignal.timeout(4000),
+          cache: 'no-store',
+          signal: AbortSignal.timeout(8000),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data?.success) {
@@ -323,9 +331,18 @@ export class SessionSidebar {
         const saved = data.name || newName;
         session.name = saved;
         restoreTitle(saved);
+        // Re-fetch so success means both the write API and a fresh list read
+        // agree. render() also updates favourite/search duplicates.
+        const reloaded = await this.loadSessions({ quiet: true });
+        if (!reloaded) throw new Error('rename_verify_failed');
+        const persisted = this.projects
+          .flatMap((project) => project.sessions || [])
+          .find((item) => item.filePath === session.filePath)?.name;
+        if (persisted !== saved) throw new Error('rename_verify_failed');
+        this.setActive(this.activeSessionFile);
         this.onSessionRenamed?.(true, session, t('renameSessionOk', { name: saved }));
       } catch {
-        restoreTitle(currentName);
+        if (input.isConnected) restoreTitle(currentName);
         this.onSessionRenamed?.(false, session, t('renameSessionFail'));
       }
     };

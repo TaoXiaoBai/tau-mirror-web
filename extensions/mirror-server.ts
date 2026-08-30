@@ -442,63 +442,172 @@ export default function (pi: ExtensionAPI) {
     return String(name || "").replace(/[\r\n]+/g, " ").trim().slice(0, 120);
   }
 
-  function readSessionFileTail(filePath: string, maxBytes = 65536): string {
-    const stat = fs.statSync(filePath);
-    const size = Math.min(stat.size, maxBytes);
-    if (size <= 0) return "";
+  type SessionTailInfo = { name: string | null; lastEntryId: string | null };
+
+  function sessionPathsEqual(a: string | undefined | null, b: string | undefined | null): boolean {
+    if (!a || !b) return false;
+    const left = path.resolve(a);
+    const right = path.resolve(b);
+    return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+  }
+
+  /**
+   * Read JSONL records backwards until the latest session_info is found.
+   *
+   * A fixed-size tail is not sufficient: after a rename, a long assistant/tool
+   * response can move the name megabytes away from EOF. That made Tau fall back
+   * to an older title after Pi or the computer restarted. This scanner reads
+   * in blocks and retains only the one JSONL record crossing a block boundary.
+   */
+  function inspectSessionFileTail(filePath: string): SessionTailInfo {
     const fd = fs.openSync(filePath, "r");
     try {
-      const buf = Buffer.alloc(size);
-      fs.readSync(fd, buf, 0, size, Math.max(0, stat.size - size));
-      return buf.toString("utf8");
+      const stat = fs.fstatSync(fd);
+      const blockSize = 64 * 1024;
+      let position = stat.size;
+      let carry = Buffer.alloc(0);
+      let lastEntryId: string | null = null;
+
+      const inspectLine = (line: Buffer): string | null | undefined => {
+        const text = line.toString("utf8").replace(/\r$/, "").trim();
+        if (!text) return undefined;
+        try {
+          const entry = JSON.parse(text);
+          if (lastEntryId === null && typeof entry?.id === "string") lastEntryId = entry.id;
+          if (entry?.type === "session_info") {
+            return typeof entry.name === "string" ? entry.name.trim() : "";
+          }
+        } catch {}
+        return undefined;
+      };
+
+      while (position > 0) {
+        const size = Math.min(blockSize, position);
+        position -= size;
+        const chunk = Buffer.allocUnsafe(size);
+        fs.readSync(fd, chunk, 0, size, position);
+        const data = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+        let lineEnd = data.length;
+        // A final newline terminates the preceding record; it is not an extra
+        // record. Move past it before searching for the previous separator.
+        if (lineEnd > 0 && data[lineEnd - 1] === 10) lineEnd--;
+
+        let firstSeparator = -1;
+        for (let i = lineEnd - 1; i >= 0; i--) {
+          if (data[i] !== 10) continue;
+          if (firstSeparator < 0) firstSeparator = i;
+          const found = inspectLine(data.subarray(i + 1, lineEnd));
+          if (found !== undefined) return { name: found, lastEntryId };
+          lineEnd = i;
+        }
+
+        if (position === 0) {
+          const found = inspectLine(data.subarray(0, lineEnd));
+          if (found !== undefined) return { name: found, lastEntryId };
+          carry = Buffer.alloc(0);
+        } else {
+          // Keep only the leading partial record. Complete records were already
+          // inspected above and must not be parsed again with the prior block.
+          const carryEnd = firstSeparator >= 0 ? firstSeparator : lineEnd;
+          carry = Buffer.from(data.subarray(0, carryEnd));
+        }
+      }
+
+      return { name: null, lastEntryId };
     } finally {
       fs.closeSync(fd);
     }
   }
 
-  function parseJsonlEntriesFromTail(filePath: string): any[] {
-    const text = readSessionFileTail(filePath);
-    const lines = text.split(/\r?\n/);
-    const entries: any[] = [];
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try { entries.push(JSON.parse(line)); } catch {}
-    }
-    return entries;
+  function readLatestSessionName(filePath: string): string | null {
+    return inspectSessionFileTail(filePath).name;
   }
 
-  function readLatestSessionName(filePath: string): string | null {
-    const entries = parseJsonlEntriesFromTail(filePath);
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i]?.type === "session_info") {
-        return typeof entries[i].name === "string" ? String(entries[i].name).trim() : "";
-      }
-    }
-    return null;
+  function flushSessionFile(filePath: string): void {
+    if (!fs.existsSync(filePath)) return;
+    const fd = fs.openSync(filePath, "r+");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   }
 
   function appendSessionInfoToFile(filePath: string, name: string): string {
-    const entries = parseJsonlEntriesFromTail(filePath);
-    const last = entries[entries.length - 1];
+    const { lastEntryId } = inspectSessionFileTail(filePath);
     const entry = {
       type: "session_info",
       id: randomBytes(4).toString("hex"),
-      parentId: last?.id || null,
+      parentId: lastEntryId,
       timestamp: new Date().toISOString(),
       name,
     };
-    fs.appendFileSync(filePath, JSON.stringify(entry) + "\n", "utf8");
+    const fd = fs.openSync(filePath, "a");
+    try {
+      fs.writeSync(fd, JSON.stringify(entry) + "\n", undefined, "utf8");
+      // Do not report success while the rename exists only in the OS write cache.
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (readLatestSessionName(filePath) !== name) throw new Error("rename_verify_failed");
     return name;
   }
 
-  function renameSessionFile(filePath: string, rawName: string): { name: string; live: boolean } {
+  async function proxyRenameToOwner(port: number, filePath: string, name: string): Promise<string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Tau-Rename-Owner": "1",
+    };
+    if (authEnabled && AUTH_CONFIGURED) {
+      headers.Authorization = `Basic ${Buffer.from(`${AUTH_USER}:${AUTH_PASS}`).toString("base64")}`;
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/rename`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filePath, name }),
+        signal: AbortSignal.timeout(5000),
+      });
+      const data: any = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.success) throw new Error(data?.error || "owner_unavailable");
+      return sanitizeSessionName(data.name) || name;
+    } catch (error: any) {
+      if (error?.message && error.message !== "owner_unavailable") {
+        console.warn(`[Mirror] Live session rename proxy failed on port ${port}: ${error.message}`);
+      }
+      throw new Error("owner_unavailable");
+    }
+  }
+
+  async function renameSessionFile(
+    filePath: string,
+    rawName: string,
+    ownerRequest = false,
+  ): Promise<{ name: string; live: boolean; ownerPid?: number }> {
     const name = sanitizeSessionName(rawName);
     if (!name) throw new Error("empty");
+
     const currentFile = latestCtx?.sessionManager.getSessionFile();
-    const live = !!(currentFile && path.resolve(currentFile) === filePath);
-    if (live) pi.setSessionName(name);
-    else appendSessionInfoToFile(filePath, name);
-    return { name, live };
+    if (runtimeActive && sessionPathsEqual(currentFile, filePath)) {
+      pi.setSessionName(name);
+      if (pi.getSessionName() !== name) throw new Error("rename_verify_failed");
+      flushSessionFile(filePath);
+      if (readLatestSessionName(filePath) !== name) throw new Error("rename_verify_failed");
+      return { name, live: true, ownerPid: process.pid };
+    }
+
+    // Never append behind another live SessionManager's back. Its in-memory
+    // leaf would not include the rename and a later rewrite could discard it.
+    if (ownerRequest) throw new Error("owner_mismatch");
+
+    const owner = getRunningInstances().find((instance) =>
+      instance.pid !== process.pid && sessionPathsEqual(instance.sessionFile, filePath)
+    );
+    if (owner) {
+      const saved = await proxyRenameToOwner(owner.port, filePath, name);
+      if (readLatestSessionName(filePath) !== saved) throw new Error("rename_verify_failed");
+      return { name: saved, live: true, ownerPid: owner.pid };
+    }
+
+    appendSessionInfoToFile(filePath, name);
+    return { name, live: false };
   }
 
   pi.registerCommand("tau-new", {
@@ -1985,9 +2094,12 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("set_session_name", "invalid"));
             break;
           }
-          const result = sessionPath
-            ? renameSessionFile(sessionPath, name)
-            : (pi.setSessionName(name), { name, live: true });
+          const currentSessionPath = sessionPath || latestCtx?.sessionManager.getSessionFile();
+          if (!currentSessionPath) {
+            sendTo(ws, error("set_session_name", "no_session"));
+            break;
+          }
+          const result = await renameSessionFile(currentSessionPath, name);
           sendTo(ws, success("set_session_name", result));
           break;
         }
@@ -2646,7 +2758,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     if (urlPath === "/api/sessions/rename" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
           const { filePath, name } = JSON.parse(body);
           const sessionPath = resolveAllowedSessionPath(String(filePath || ""));
@@ -2655,13 +2767,21 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             res.end(JSON.stringify({ error: "invalid" }));
             return;
           }
-          const result = renameSessionFile(sessionPath, String(name || ""));
-          res.writeHead(200, { "Content-Type": "application/json" });
+          const ownerRequest = req.headers["x-tau-rename-owner"] === "1";
+          const result = await renameSessionFile(sessionPath, String(name || ""), ownerRequest);
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
           res.end(JSON.stringify({ success: true, ...result }));
         } catch (err: any) {
-          const code = err?.message === "empty" ? 400 : 500;
-          res.writeHead(code, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err?.message || "rename_failed" }));
+          const message = err?.message || "rename_failed";
+          const code = message === "empty" ? 400 : message === "owner_unavailable" ? 409 : 500;
+          res.writeHead(code, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ error: message }));
         }
       });
       return;
@@ -2817,7 +2937,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         return bTime - aTime;
       });
 
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
       res.end(JSON.stringify({ projects }));
     } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -3123,6 +3246,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
             rl.close();
             stream.destroy();
+
+            const latestName = readLatestSessionName(filePath);
+            if (latestName !== null) sessionName = latestName;
 
             if (matches.length > 0) {
               results.push({
