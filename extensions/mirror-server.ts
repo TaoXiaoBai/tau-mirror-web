@@ -662,12 +662,82 @@ export default function (pi: ExtensionAPI) {
     return name;
   }
 
+  async function inspectAppendedSessionNames(
+    filePath: string,
+    start: number,
+    end: number,
+  ): Promise<{ validBoundary: boolean; found: boolean; name: string | null }> {
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      if (start > 0) {
+        const boundary = Buffer.allocUnsafe(1);
+        const { bytesRead } = await handle.read(boundary, 0, 1, start - 1);
+        if (bytesRead !== 1 || boundary[0] !== 10) return { validBoundary: false, found: false, name: null };
+      }
+
+      const blockSize = 64 * 1024;
+      let position = start;
+      let pending = Buffer.alloc(0);
+      let found = false;
+      let name: string | null = null;
+      while (position < end) {
+        const size = Math.min(blockSize, end - position);
+        const chunk = Buffer.allocUnsafe(size);
+        const { bytesRead } = await handle.read(chunk, 0, size, position);
+        if (bytesRead <= 0) break;
+        position += bytesRead;
+        const data = pending.length
+          ? Buffer.concat([pending, chunk.subarray(0, bytesRead)])
+          : chunk.subarray(0, bytesRead);
+        let lineStart = 0;
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] !== 10) continue;
+          const line = data.subarray(lineStart, i).toString("utf8").replace(/\r$/, "");
+          lineStart = i + 1;
+          try {
+            const entry = JSON.parse(line);
+            if (entry?.type === "session_info") {
+              found = true;
+              name = typeof entry.name === "string" ? entry.name.trim() : "";
+            }
+          } catch {}
+        }
+        pending = Buffer.from(data.subarray(lineStart));
+      }
+      // The stat snapshot can end at a complete final line even without LF.
+      // Parse it only when all requested bytes were read.
+      if (position === end && pending.length > 0) {
+        try {
+          const entry = JSON.parse(pending.toString("utf8").replace(/\r$/, ""));
+          if (entry?.type === "session_info") {
+            found = true;
+            name = typeof entry.name === "string" ? entry.name.trim() : "";
+          }
+        } catch {}
+      }
+      return { validBoundary: true, found, name };
+    } finally {
+      await handle.close();
+    }
+  }
+
   async function readLatestSessionNameForList(filePath: string): Promise<string | null> {
     const stat = await fs.promises.stat(filePath);
     const cached = sessionNameCache.get(sessionCacheKey(filePath));
     if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.name;
+
+    if (cached && stat.size > cached.size) {
+      const appended = await inspectAppendedSessionNames(filePath, cached.size, stat.size);
+      if (appended.validBoundary) {
+        const name = appended.found ? appended.name : cached.name;
+        cacheSessionName(filePath, stat, name);
+        return name;
+      }
+    }
+
     // Cold cache reads use asynchronous file I/O so listing long sessions does
-    // not pause Pi's WebSocket events or token streaming.
+    // not pause Pi's WebSocket events or token streaming. Truncation, in-place
+    // edits, and invalid append boundaries intentionally take this safe path.
     const name = (await inspectSessionFileTailAsync(filePath)).name;
     cacheSessionName(filePath, stat, name);
     return name;
