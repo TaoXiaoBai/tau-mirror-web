@@ -32,7 +32,7 @@ interface PlanModeState {
 	toolsBeforePlanMode?: string[];
 }
 
-type PlanModeAction = "get_state" | "enable" | "disable" | "toggle" | "execute" | "stay" | "refine";
+type PlanModeAction = "get_state" | "enable" | "disable" | "toggle" | "execute" | "stay" | "refine" | "pause_for_model_switch" | "resume";
 
 interface PlanModeControl {
 	action?: PlanModeAction;
@@ -61,6 +61,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let toolsBeforePlanMode: string[] | undefined;
 	let activeCtx: ExtensionContext | null = null;
 	let webClientCount = 0;
+	let executionContinuationPending = false;
+	let executionNoProgressTurns = 0;
 
 	// Publish a complete, authoritative snapshot. requestId lets Tau distinguish
 	// a confirmed state transition from an unrelated progress update.
@@ -143,6 +145,25 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		toolsBeforePlanMode = undefined;
 	}
 
+	function continueExecution(): void {
+		if (!executionMode || executionContinuationPending) return;
+		const remaining = todoItems.filter((item) => !item.completed);
+		if (remaining.length === 0) return;
+		executionContinuationPending = true;
+		const remainingList = remaining.map((item) => `${item.step}. ${item.text}`).join("\n");
+		const next = remaining[0];
+		pi.sendMessage(
+			{
+				customType: "plan-mode-continue",
+				content: `Continue executing the plan without waiting for the user.\n\nRemaining steps:\n${remainingList}\n\nProceed with the next incomplete step now: ${next.text}\nContinue through subsequent steps in order when possible. After completing each step, include its [DONE:n] marker.`,
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+		// The flag only prevents duplicate scheduling in the same event cycle.
+		// It is cleared when the next turn starts.
+	}
+
 	function persistState(): void {
 		pi.appendEntry("plan-mode", {
 			enabled: planModeEnabled,
@@ -157,6 +178,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (enabled === planModeEnabled && !executionMode) return;
 		planModeEnabled = enabled;
 		executionMode = false;
+		executionContinuationPending = false;
+		executionNoProgressTurns = 0;
 		awaitingAction = false;
 		if (!enabled) todoItems = [];
 
@@ -224,6 +247,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				const firstTodoItem = todoItems[0];
 				planModeEnabled = false;
 				executionMode = true;
+				executionContinuationPending = false;
+				executionNoProgressTurns = 0;
 				awaitingAction = false;
 				restoreNormalModeTools();
 				updateStatus(activeCtx);
@@ -231,7 +256,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
 				pi.sendMessage({
 					customType: "plan-mode-execute",
-					content: `Execute the plan.\n\nRemaining steps:\n${remainingList}\n\nStart with: ${firstTodoItem.text}\nAfter completing a step, include a [DONE:n] tag in your response.`,
+					content: `Execute the entire plan.\n\nRemaining steps:\n${remainingList}\n\nStart with: ${firstTodoItem.text}\nContinue automatically through every remaining step; do not stop to ask the user to type \"continue\" between steps. After completing each step, include its [DONE:n] marker.`,
 					display: true,
 				}, { triggerTurn: true, deliverAs: "followUp" });
 			} else if (action === "refine") {
@@ -241,6 +266,42 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				awaitingAction = false;
 				persistState();
 				pi.sendUserMessage(`Refine the current plan using these instructions:\n${instruction}`, { deliverAs: "followUp" });
+			} else if (action === "pause_for_model_switch") {
+				if (!planModeEnabled && !executionMode) throw new Error("Plan mode is not active");
+				// Prevent agent_settled from scheduling the normal automatic next
+				// execution turn while Tau is waiting to install the new model.
+				executionContinuationPending = true;
+				executionNoProgressTurns = 0;
+				awaitingAction = false;
+				persistState();
+			} else if (action === "resume") {
+				// A model hot-switch aborts only the active provider turn. Preserve
+				// the current plan/progress and continue on the newly selected model.
+				if (!planModeEnabled && !executionMode) throw new Error("Plan mode is not active");
+				awaitingAction = false;
+				executionContinuationPending = true;
+				// An aborted partial turn has no reliable [DONE:n] marker; do not
+				// count it toward the no-progress safety pause.
+				executionNoProgressTurns = 0;
+				persistState();
+				if (executionMode) {
+					const remaining = todoItems.filter((item) => !item.completed);
+					if (remaining.length === 0) throw new Error("The plan has no remaining steps");
+					const remainingList = remaining.map((item) => `${item.step}. ${item.text}`).join("\n");
+					pi.sendMessage({
+						customType: "plan-mode-model-resume",
+						content: `Continue executing the existing plan with the newly selected model.\n\nRemaining steps:\n${remainingList}\n\nResume from the first unfinished step. Preserve completed steps, continue automatically, and include [DONE:n] after completing each remaining step.`,
+						display: true,
+					}, { triggerTurn: true, deliverAs: "followUp" });
+				} else {
+					const existingPlan = todoItems.length
+						? `\n\nCurrent draft steps:\n${todoItems.map((item) => `${item.step}. ${item.text}`).join("\n")}`
+						: "";
+					pi.sendUserMessage(
+						`Continue the current read-only planning task with the newly selected model. Re-check the conversation and continue from where the interrupted turn stopped.${existingPlan}`,
+						{ deliverAs: "followUp" },
+					);
+				}
 			}
 		} catch (err: any) {
 			error = err?.message || String(err);
@@ -326,12 +387,18 @@ Do NOT attempt to make changes - just describe what you would do.`,
 Remaining steps:
 ${todoList}
 
-Execute each step in order.
-After completing a step, include a [DONE:n] tag in your response.`,
+Execute every remaining step in order.
+Continue automatically between steps; do not wait for a user message.
+After completing each step, include its [DONE:n] marker.`,
 					display: false,
 				},
 			};
 		}
+	});
+
+	pi.on("turn_start", async () => {
+		if (executionContinuationPending) executionContinuationPending = false;
+		else if (executionMode) executionNoProgressTurns = 0;
 	});
 
 	// Track progress after each turn
@@ -341,29 +408,57 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 		const text = getTextContent(event.message);
 		if (markCompletedSteps(text, todoItems) > 0) {
+			executionNoProgressTurns = 0;
 			updateStatus(ctx);
+		} else {
+			executionNoProgressTurns += 1;
 		}
 		persistState();
 	});
 
-	// Handle plan completion and plan mode UI
-	pi.on("agent_end", async (event, ctx) => {
-		// Check if execution is complete
-		if (executionMode && todoItems.length > 0) {
-			if (todoItems.every((t) => t.completed)) {
-				const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
-				pi.sendMessage(
-					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
-					{ triggerTurn: false },
-				);
-				executionMode = false;
-				awaitingAction = false;
-				todoItems = [];
-				updateStatus(ctx);
-				persistState(); // Save cleared state so resume doesn't restore old execution mode
-			}
+	// A completed assistant response ends a normal Pi run even when plan steps
+	// remain. Once Pi is truly idle, schedule the next execution turn ourselves.
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!executionMode || todoItems.length === 0) return;
+		if (todoItems.every((t) => t.completed)) {
+			const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
+			pi.sendMessage(
+				{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+				{ triggerTurn: false },
+			);
+			executionMode = false;
+			executionContinuationPending = false;
+			executionNoProgressTurns = 0;
+			awaitingAction = false;
+			todoItems = [];
+			updateStatus(ctx);
+			persistState();
 			return;
 		}
+		// Avoid an unbounded paid loop if a model repeatedly ignores progress
+		// markers. Normal successful steps reset this counter in turn_end.
+		if (executionNoProgressTurns >= 3) {
+			pi.sendMessage(
+				{
+					customType: "plan-mode-paused",
+					content: "Plan execution paused because three consecutive turns did not report a [DONE:n] progress marker. Review the last result, then resume when ready.",
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
+			executionMode = false;
+			executionContinuationPending = false;
+			awaitingAction = false;
+			updateStatus(ctx);
+			persistState();
+			return;
+		}
+		continueExecution();
+	});
+
+	// Handle plan creation and plan mode UI
+	pi.on("agent_end", async (event, ctx) => {
+		if (executionMode) return;
 
 		if (!planModeEnabled || !ctx.hasUI) return;
 
@@ -405,19 +500,22 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 			planModeEnabled = false;
 			executionMode = true;
+			executionContinuationPending = false;
+			executionNoProgressTurns = 0;
 			awaitingAction = false;
 			restoreNormalModeTools();
 			updateStatus(ctx);
 			persistState();
 
 			const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
-			const execMessage = `Execute the plan.
+			const execMessage = `Execute the entire plan.
 
 Remaining steps:
 ${remainingList}
 
 Start with: ${firstTodoItem.text}
-After completing a step, include a [DONE:n] tag in your response.`;
+Continue automatically through every remaining step; do not stop to ask the user to type "continue" between steps.
+After completing each step, include its [DONE:n] marker.`;
 			pi.sendMessage(planTodoListMessage, { deliverAs: "followUp" });
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },

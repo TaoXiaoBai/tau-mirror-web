@@ -411,7 +411,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("tau-reload-models", {
     description: "Reload Pi settings and model providers for Tau",
     handler: async (_args, ctx) => {
+      // Reload invalidates this entire extension closure. Do not execute any
+      // extension code after the await (including notifications via old ctx).
       await ctx.reload();
+      return;
     },
   });
 
@@ -541,8 +544,12 @@ export default function (pi: ExtensionAPI) {
   let heartbeatTimer: NodeJS.Timeout | null = null;
   const clients = new Set<WebSocket>();
 
-  // Store latest context reference for use in command handlers
+  // Store latest context reference for use in command handlers. Session-bound
+  // API calls must stop as soon as Pi begins replacing/reloading the session;
+  // callbacks from closing sockets can otherwise outlive this extension ctx.
   let latestCtx: ExtensionContext | null = null;
+  let runtimeActive = true;
+  let runtimeGeneration = 0;
 
   // Provider metadata is intentionally fetched only for providers explicitly
   // opted in here. This avoids silently calling every configured endpoint when
@@ -1014,37 +1021,25 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function captureDefaultPreferences() {
-    try {
-      const settingsPath = path.join(PI_AGENT_DIR, "settings.json");
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-      return {
-        defaultProvider: settings.defaultProvider,
-        defaultModel: settings.defaultModel,
-        defaultThinkingLevel: settings.defaultThinkingLevel,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function restoreDefaultPreferences(preferences: ReturnType<typeof captureDefaultPreferences>) {
-    if (!preferences) return;
-    try {
-      const settingsPath = path.join(PI_AGENT_DIR, "settings.json");
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-      for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel"] as const) {
-        if (preferences[key] === undefined) delete settings[key];
-        else settings[key] = preferences[key];
-      }
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    } catch (e: any) {
-      console.warn(`[Mirror] Could not restore Pi defaults after a temporary web selection: ${e?.message || e}`);
-    }
-  }
-
   let tokenSaverEnabled = false;
   let tokenSaverPreviousThinking = "medium";
+  // HTTP RPC requests are handled concurrently. Serialize model changes so
+  // two quick clicks cannot finish out of order and leave Pi on the older one.
+  let modelChangeQueue: Promise<void> = Promise.resolve();
+
+  async function waitForRuntimeIdle(ctx: ExtensionContext, timeoutMs = 10000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (runtimeActive && !ctx.isIdle() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    return runtimeActive && ctx.isIdle();
+  }
+
+  async function setModelSerially(model: any): Promise<boolean> {
+    const operation = modelChangeQueue.then(() => pi.setModel(model));
+    modelChangeQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
 
   // Pending authoritative Plan Mode requests. The plan extension replies on the
   // shared event bus with the same requestId; Tau never guesses the next state.
@@ -1094,23 +1089,60 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  function isStaleExtensionError(error: unknown): boolean {
+    // Avoid instanceof: errors crossing loader/module realms need not share the
+    // same Error constructor.
+    return String((error as any)?.message || error).includes("extension ctx is stale");
+  }
+
+  function safeRuntimeEmit(event: string, payload: any): boolean {
+    if (!runtimeActive) return false;
+    try {
+      pi.events.emit(event, payload);
+      return true;
+    } catch (error) {
+      // Pi marks the old API stale before/while reload teardown runs. Socket
+      // close/error callbacks can race that transition, so runtimeActive alone
+      // cannot make an emit safe. Treat staleness as teardown, never as an
+      // uncaught process-level error.
+      if (isStaleExtensionError(error)) {
+        runtimeActive = false;
+        latestCtx = null;
+        return false;
+      }
+      console.error(`[Mirror] Failed to emit ${event}:`, error);
+      return false;
+    }
+  }
+
   function requestPlanMode(action: string, extra: Record<string, any> = {}, timeoutMs = 1400): Promise<any> {
+    const unavailable = (error: string) => ({ available: false, mode: "unavailable", enabled: false, executing: false, awaitingAction: false, todos: [], error });
+    if (!runtimeActive) {
+      return Promise.resolve(unavailable("Tau session runtime is shutting down"));
+    }
     const requestId = randomBytes(8).toString("hex");
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         pendingPlanRequests.delete(requestId);
-        resolve({ available: false, mode: "unavailable", enabled: false, executing: false, awaitingAction: false, todos: [], error: "Plan Mode extension did not respond" });
+        resolve(unavailable("Plan Mode extension did not respond"));
       }, timeoutMs);
       pendingPlanRequests.set(requestId, (state) => {
         clearTimeout(timer);
         resolve(state);
       });
-      pi.events.emit("tau-plan-mode:control", { action, requestId, ...extra });
+      if (!safeRuntimeEmit("tau-plan-mode:control", { action, requestId, ...extra })) {
+        clearTimeout(timer);
+        pendingPlanRequests.delete(requestId);
+        resolve(unavailable("Tau session runtime is shutting down"));
+      }
     });
   }
 
   function publishPlanClientCount() {
-    pi.events.emit("tau-plan-mode:clients", clients.size);
+    // WebSocket close/error events can arrive asynchronously after Pi has
+    // invalidated this extension, even before session_shutdown updates our
+    // local flags. safeRuntimeEmit handles both sides of that race.
+    safeRuntimeEmit("tau-plan-mode:clients", clients.size);
   }
 
   let mirrorUrl = "";
@@ -1284,6 +1316,8 @@ export default function (pi: ExtensionAPI) {
   let userMessages: string[] = [];
 
   pi.on("session_start", async (_event, ctx) => {
+    runtimeActive = true;
+    const generation = ++runtimeGeneration;
     latestCtx = ctx;
     turnCount = 0;
     titleSet = false;
@@ -1293,11 +1327,21 @@ export default function (pi: ExtensionAPI) {
     // Extensions receive session_start in load order. Defer one tick so the
     // Plan extension has restored this session before Tau requests its state.
     setTimeout(() => {
+      if (!runtimeActive || generation !== runtimeGeneration) return;
       requestPlanMode("get_state").then((state) => {
+        if (!runtimeActive || generation !== runtimeGeneration) return;
         planModeState = state;
         broadcast({ type: "plan_mode_state", data: state });
       });
     }, 0);
+  });
+
+  // This is the authoritative notification for /name and every
+  // pi.setSessionName() call, including names edited from Tau.
+  pi.on("session_info_changed", async (event, ctx) => {
+    latestCtx = ctx;
+    titleSet = !!event.name;
+    broadcast({ type: "event", event: { type: "session_name", name: event.name || "" } });
   });
 
   pi.on("turn_start", async (_event, _ctx) => {
@@ -1457,6 +1501,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   async function handleCommand(ws: WebSocket, command: any) {
     const id = command.id;
+    if (!runtimeActive) return;
     const ctx = latestCtx;
 
     const success = (cmd: string, data?: any) => {
@@ -1600,7 +1645,7 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error(command.type, "Pi is busy; wait until the current response finishes"));
             break;
           }
-          const allowed = new Set(["get_state", "enable", "disable", "toggle", "execute", "stay", "refine"]);
+          const allowed = new Set(["get_state", "enable", "disable", "toggle", "execute", "stay", "refine", "pause_for_model_switch", "resume"]);
           if (!allowed.has(action)) {
             sendTo(ws, error(command.type, "Unknown Plan Mode action"));
             break;
@@ -1757,20 +1802,76 @@ export default function (pi: ExtensionAPI) {
               : `没有找到模型 ${wantedProvider} :: ${wantedId}（该供应商尚未加载）`));
             break;
           }
-          const defaults = captureDefaultPreferences();
-          let ok = false;
-          try {
-            ok = await pi.setModel(model);
-          } finally {
-            // Web model switching is session-scoped. Do not silently rewrite
-            // the user's normal Pi startup model.
-            restoreDefaultPreferences(defaults);
+          const wasBusy = !ctx.isIdle();
+          // Refresh Plan Mode ownership before deciding whether an active turn
+          // may be interrupted; the cached broadcast can lag by a tick.
+          if (wasBusy) {
+            const currentPlanState = await requestPlanMode("get_state", {}, 800);
+            if (currentPlanState.available && !currentPlanState.error) {
+              planModeState = currentPlanState;
+            }
           }
+          const planWasActive = planModeState.enabled === true || planModeState.executing === true;
+          if (wasBusy && !planWasActive) {
+            sendTo(ws, error("set_model", "Pi is busy; model hot-switching is available only while Plan Mode is active"));
+            break;
+          }
+
+          // During Plan Mode, preserve the plan but abort the in-flight provider
+          // turn so the new model can take over immediately. Pause automatic
+          // Plan continuation first, otherwise agent_settled can race us and
+          // start another turn on the old model.
+          if (wasBusy) {
+            const paused = await requestPlanMode("pause_for_model_switch", {}, 1200);
+            if (!paused.available || paused.error) {
+              sendTo(ws, error("set_model", `Could not pause Plan Mode for model switch: ${paused.error || "Plan Mode unavailable"}`));
+              break;
+            }
+            planModeState = paused;
+            ctx.abort();
+            if (!await waitForRuntimeIdle(ctx)) {
+              // Release the Plan extension's continuation lock even though the
+              // switch could not proceed.
+              await requestPlanMode("resume", {}, 2500);
+              sendTo(ws, error("set_model", "Timed out waiting for the interrupted Plan Mode turn to stop"));
+              break;
+            }
+          }
+
+          // pi.setModel is already session-scoped. Saving a startup default is
+          // a separate explicit Pi action, so never rewrite settings.json here.
+          const ok = await setModelSerially(model);
           if (!ok) {
+            if (wasBusy && planWasActive) await requestPlanMode("resume", {}, 2500);
             sendTo(ws, error("set_model", "No API key for this model"));
             break;
           }
-          sendTo(ws, success("set_model", model));
+
+          let resumedPlan = false;
+          let resumeWarning = "";
+          if (wasBusy && planWasActive) {
+            // Allow abort/agent_end lifecycle handlers to finish persisting any
+            // progress before the continuation turn reads the remaining steps.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const resumed = await requestPlanMode("resume", {}, 2500);
+            if (!resumed.available || resumed.error) {
+              resumeWarning = resumed.error || "Plan Mode unavailable";
+            } else {
+              planModeState = resumed;
+              resumedPlan = true;
+            }
+          }
+
+          // Return Pi's authoritative post-switch state rather than the
+          // browser's requested catalogue object. A rare resume failure is a
+          // warning, not a false claim that the already-completed switch failed.
+          sendTo(ws, success("set_model", {
+            model: ctx.model || model,
+            thinkingLevel: pi.getThinkingLevel(),
+            resumedPlan,
+            resumeWarning: resumeWarning || undefined,
+            planMode: planModeState,
+          }));
           break;
         }
 
@@ -1791,13 +1892,7 @@ export default function (pi: ExtensionAPI) {
             (m: any) => m.provider === currentModel.provider && m.id === currentModel.id
           );
           const nextModel = availModels[(idx + 1) % availModels.length];
-          const defaults = captureDefaultPreferences();
-          let changed = false;
-          try {
-            changed = await pi.setModel(nextModel);
-          } finally {
-            restoreDefaultPreferences(defaults);
-          }
+          const changed = await setModelSerially(nextModel);
           if (!changed) {
             sendTo(ws, error("cycle_model", "No API key for this model"));
             break;
@@ -1819,12 +1914,7 @@ export default function (pi: ExtensionAPI) {
           const current = pi.getThinkingLevel();
           const idx = levels.indexOf(current);
           const next = levels[(idx + 1) % levels.length];
-          const defaults = captureDefaultPreferences();
-          try {
-            pi.setThinkingLevel(next as any);
-          } finally {
-            restoreDefaultPreferences(defaults);
-          }
+          pi.setThinkingLevel(next as any);
           const actual = pi.getThinkingLevel();
           sendTo(ws, success("cycle_thinking_level", { level: actual }));
           break;
@@ -1835,13 +1925,8 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, success("set_thinking_level", { level: "off" }));
             break;
           }
-          const defaults = captureDefaultPreferences();
-          try {
-            pi.setThinkingLevel(command.level);
-          } finally {
-            restoreDefaultPreferences(defaults);
-          }
-          sendTo(ws, success("set_thinking_level"));
+          pi.setThinkingLevel(command.level);
+          sendTo(ws, success("set_thinking_level", { level: pi.getThinkingLevel() }));
           break;
         }
 
@@ -1850,12 +1935,10 @@ export default function (pi: ExtensionAPI) {
           if (enabled && !tokenSaverEnabled) {
             tokenSaverPreviousThinking = pi.getThinkingLevel();
             if (tokenSaverPreviousThinking !== "off") {
-              const defaults = captureDefaultPreferences();
-              try { pi.setThinkingLevel("off"); } finally { restoreDefaultPreferences(defaults); }
+              pi.setThinkingLevel("off");
             }
           } else if (!enabled && tokenSaverEnabled) {
-            const defaults = captureDefaultPreferences();
-            try { pi.setThinkingLevel(tokenSaverPreviousThinking || "off"); } finally { restoreDefaultPreferences(defaults); }
+            pi.setThinkingLevel(tokenSaverPreviousThinking || "off");
           }
           tokenSaverEnabled = enabled;
           const data = { enabled: tokenSaverEnabled, thinkingLevel: pi.getThinkingLevel() };
@@ -2251,7 +2334,10 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const immutable = ext === ".woff2" || ext === ".woff" || filePath.includes(`${path.sep}vendor${path.sep}`);
-      const cacheControl = ext === ".html"
+      // App code changes together with the extension during /reload. Revalidate
+      // HTML/JS immediately so an old browser bundle does not speak an outdated
+      // model-selection protocol to the new server.
+      const cacheControl = ext === ".html" || ext === ".js"
         ? "no-cache"
         : immutable
           ? "public, max-age=604800, immutable"
@@ -3293,6 +3379,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // Cleanup on shutdown
   // ═══════════════════════════════════════
   pi.on("session_shutdown", async () => {
+    // Invalidate first: terminate()/close() schedules WebSocket callbacks, and
+    // none of those callbacks may touch the old pi API after this hook returns.
+    runtimeActive = false;
+    runtimeGeneration++;
+    latestCtx = null;
     stopServer();
     console.log("[Mirror] Server shut down");
   });

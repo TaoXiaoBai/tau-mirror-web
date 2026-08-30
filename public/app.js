@@ -1473,6 +1473,8 @@ function updateThinkingBtn() {
 }
 
 let modelInfoInflight = null;
+let modelSelectionRevision = 0;
+let modelSelectionRequestRevision = 0;
 
 async function fetchModelInfo(options = {}) {
   if (modelInfoInflight && !options.refreshProviderMetadata) return modelInfoInflight;
@@ -1486,6 +1488,7 @@ async function fetchModelInfo(options = {}) {
 }
 
 async function loadModelInfo(options = {}) {
+  const selectionRevisionAtStart = modelSelectionRevision;
   try {
     const needProviders = options.refreshProviderMetadata === true || options.includeProviders === true;
     const [modelsResp, stateResp, providersResp] = await Promise.all([
@@ -1521,12 +1524,16 @@ async function loadModelInfo(options = {}) {
       availableModels = modelsData.data.models;
       modelMetadataMode = modelsData.data.metadataMode || 'pi-only';
     }
-    if (stateData.success && stateData.data?.model) {
-      currentModelId = stateData.data.model.id || '';
-      currentModelProvider = stateData.data.model.provider || '';
-    }
-    if (stateData.success && stateData.data?.thinkingLevel) {
-      currentThinkingLevel = stateData.data.thinkingLevel;
+    // A model selection may complete while these parallel requests are in
+    // flight. Never let an older state response roll the picker back.
+    if (selectionRevisionAtStart === modelSelectionRevision) {
+      if (stateData.success && stateData.data?.model) {
+        currentModelId = stateData.data.model.id || '';
+        currentModelProvider = stateData.data.model.provider || '';
+      }
+      if (stateData.success && stateData.data?.thinkingLevel) {
+        currentThinkingLevel = stateData.data.thinkingLevel;
+      }
     }
     if (stateData.success && stateData.data?.planMode) {
       applyPlanModeState(stateData.data.planMode);
@@ -1555,6 +1562,7 @@ async function loadModelInfo(options = {}) {
 function handleModelSelect(event) {
   const model = event?.model;
   if (!model || !model.id) return;
+  modelSelectionRevision++;
   const previousKey = getModelKey({ provider: currentModelProvider, id: currentModelId });
   currentModelId = model.id;
   currentModelProvider = model.provider || '';
@@ -1927,20 +1935,40 @@ function openModelDropdown() {
     const model = availableModels.find(entry => getModelKey(entry) === item.dataset.modelKey)
       || { provider: item.dataset.provider, id: item.dataset.modelId };
     const display = formatModelName(model);
+    // Invalidate state fetches that started before this click. The server
+    // response below is authoritative for the actual selected model.
+    modelSelectionRevision++;
+    const requestRevision = ++modelSelectionRequestRevision;
     const result = await rpcCommand(
       { type: 'set_model', provider: model.provider, modelId: model.id },
       t('switchingTo', { name: display })
     );
     if (!result?.success) {
-      await fetchModelInfo();
+      if (requestRevision === modelSelectionRequestRevision) await fetchModelInfo();
       return;
     }
-    currentModelId = model.id;
-    currentModelProvider = model.provider || '';
-    rememberModel(model);
-    applyContextWindow(model);
+    // If the user clicked another model while this request was pending, only
+    // the newest click is allowed to update the picker.
+    if (requestRevision !== modelSelectionRequestRevision) return;
+    const selected = result.data?.model || result.data || model;
+    currentModelId = selected.id || model.id;
+    currentModelProvider = selected.provider || model.provider || '';
+    if (result.data?.thinkingLevel) currentThinkingLevel = result.data.thinkingLevel;
+    if (result.data?.planMode) applyPlanModeState(result.data.planMode);
+    const knownSelected = availableModels.find(entry => getModelKey(entry) === getModelKey(selected));
+    if (knownSelected) Object.assign(knownSelected, selected);
+    else availableModels.push(selected);
+    rememberModel(selected);
+    applyContextWindow(knownSelected || selected);
     updateModelLabel();
-    showToast(t('switchedTo', { name: display }), 'success', 2600);
+    const selectedName = formatModelName(knownSelected || selected);
+    if (result.data?.resumeWarning) {
+      showToast(`已切换到 ${selectedName}，但计划自动续接失败：${result.data.resumeWarning}`, 'error', 5000);
+    } else if (result.data?.resumedPlan) {
+      showToast(`已切换到 ${selectedName}，正在从未完成步骤继续计划`, 'success', 3600);
+    } else {
+      showToast(t('switchedTo', { name: selectedName }), 'success', 2600);
+    }
   });
 
   renderItems('');
