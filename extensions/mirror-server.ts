@@ -442,6 +442,81 @@ export default function (pi: ExtensionAPI) {
     return String(name || "").replace(/[\r\n]+/g, " ").trim().slice(0, 120);
   }
 
+  type SessionNameCacheEntry = {
+    size: number;
+    mtimeMs: number;
+    name: string | null;
+  };
+  const SESSION_NAME_CACHE_PATH = path.join(PI_AGENT_DIR, "tau-session-names-v1.json");
+  const MAX_SESSION_NAME_CACHE_ENTRIES = 5000;
+  const sessionNameCache = new Map<string, SessionNameCacheEntry>();
+  let sessionNameCacheDirty = false;
+  let sessionNameCacheTimer: NodeJS.Timeout | null = null;
+
+  function sessionCacheKey(filePath: string): string {
+    const resolved = path.resolve(filePath);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
+
+  function loadSessionNameCache(): void {
+    try {
+      const stat = fs.statSync(SESSION_NAME_CACHE_PATH);
+      if (stat.size > 4 * 1024 * 1024) return;
+      const payload = JSON.parse(fs.readFileSync(SESSION_NAME_CACHE_PATH, "utf8"));
+      if (payload?.version !== 1 || !Array.isArray(payload.entries)) return;
+      for (const item of payload.entries.slice(-MAX_SESSION_NAME_CACHE_ENTRIES)) {
+        if (!item || typeof item.path !== "string" || typeof item.size !== "number" || typeof item.mtimeMs !== "number") continue;
+        const name = item.name === null ? null : typeof item.name === "string" ? item.name : null;
+        sessionNameCache.set(sessionCacheKey(item.path), { size: item.size, mtimeMs: item.mtimeMs, name });
+      }
+    } catch {}
+  }
+
+  function persistSessionNameCache(): void {
+    if (sessionNameCacheTimer) {
+      clearTimeout(sessionNameCacheTimer);
+      sessionNameCacheTimer = null;
+    }
+    if (!sessionNameCacheDirty) return;
+    sessionNameCacheDirty = false;
+    try {
+      fs.mkdirSync(path.dirname(SESSION_NAME_CACHE_PATH), { recursive: true });
+      const entries = Array.from(sessionNameCache.entries())
+        .slice(-MAX_SESSION_NAME_CACHE_ENTRIES)
+        .map(([filePath, value]) => ({ path: filePath, ...value }));
+      // This file is only an optimization. A partial write after a crash is
+      // ignored on next startup and rebuilt from the authoritative JSONL files.
+      fs.writeFileSync(SESSION_NAME_CACHE_PATH, JSON.stringify({ version: 1, entries }), "utf8");
+    } catch (error: any) {
+      sessionNameCacheDirty = true;
+      console.warn(`[Mirror] Could not persist session-name cache: ${error?.message || error}`);
+    }
+  }
+
+  function scheduleSessionNameCachePersist(): void {
+    if (sessionNameCacheTimer) return;
+    sessionNameCacheTimer = setTimeout(persistSessionNameCache, 250);
+    sessionNameCacheTimer.unref?.();
+  }
+
+  function cacheSessionName(filePath: string, stat: fs.Stats, name: string | null): void {
+    const key = sessionCacheKey(filePath);
+    const current = sessionNameCache.get(key);
+    if (current?.size === stat.size && current.mtimeMs === stat.mtimeMs && current.name === name) return;
+    // Refresh insertion order so pruning retains recently used sessions.
+    sessionNameCache.delete(key);
+    sessionNameCache.set(key, { size: stat.size, mtimeMs: stat.mtimeMs, name });
+    while (sessionNameCache.size > MAX_SESSION_NAME_CACHE_ENTRIES) {
+      const oldest = sessionNameCache.keys().next().value;
+      if (typeof oldest !== "string") break;
+      sessionNameCache.delete(oldest);
+    }
+    sessionNameCacheDirty = true;
+    scheduleSessionNameCachePersist();
+  }
+
+  loadSessionNameCache();
+
   type SessionTailInfo = { name: string | null; lastEntryId: string | null };
 
   function sessionPathsEqual(a: string | undefined | null, b: string | undefined | null): boolean {
@@ -519,8 +594,88 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  async function inspectSessionFileTailAsync(filePath: string): Promise<SessionTailInfo> {
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      const stat = await handle.stat();
+      const blockSize = 64 * 1024;
+      let position = stat.size;
+      let carry = Buffer.alloc(0);
+      let lastEntryId: string | null = null;
+      let scannedBlocks = 0;
+
+      const inspectLine = (line: Buffer): string | null | undefined => {
+        const text = line.toString("utf8").replace(/\r$/, "").trim();
+        if (!text) return undefined;
+        try {
+          const entry = JSON.parse(text);
+          if (lastEntryId === null && typeof entry?.id === "string") lastEntryId = entry.id;
+          if (entry?.type === "session_info") {
+            return typeof entry.name === "string" ? entry.name.trim() : "";
+          }
+        } catch {}
+        return undefined;
+      };
+
+      while (position > 0) {
+        const size = Math.min(blockSize, position);
+        position -= size;
+        const chunk = Buffer.allocUnsafe(size);
+        await handle.read(chunk, 0, size, position);
+        // Large JSON parsing and Buffer concatenation are still CPU work. Yield
+        // periodically so streaming/UI events are not starved on a cold scan.
+        if (++scannedBlocks % 8 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+        const data = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+        let lineEnd = data.length;
+        if (lineEnd > 0 && data[lineEnd - 1] === 10) lineEnd--;
+
+        let firstSeparator = -1;
+        for (let i = lineEnd - 1; i >= 0; i--) {
+          if (data[i] !== 10) continue;
+          if (firstSeparator < 0) firstSeparator = i;
+          const found = inspectLine(data.subarray(i + 1, lineEnd));
+          if (found !== undefined) return { name: found, lastEntryId };
+          lineEnd = i;
+        }
+
+        if (position === 0) {
+          const found = inspectLine(data.subarray(0, lineEnd));
+          if (found !== undefined) return { name: found, lastEntryId };
+          carry = Buffer.alloc(0);
+        } else {
+          const carryEnd = firstSeparator >= 0 ? firstSeparator : lineEnd;
+          carry = Buffer.from(data.subarray(0, carryEnd));
+        }
+      }
+      return { name: null, lastEntryId };
+    } finally {
+      await handle.close();
+    }
+  }
+
   function readLatestSessionName(filePath: string): string | null {
-    return inspectSessionFileTail(filePath).name;
+    const stat = fs.statSync(filePath);
+    const cached = sessionNameCache.get(sessionCacheKey(filePath));
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.name;
+    const name = inspectSessionFileTail(filePath).name;
+    cacheSessionName(filePath, stat, name);
+    return name;
+  }
+
+  async function readLatestSessionNameForList(filePath: string): Promise<string | null> {
+    const stat = await fs.promises.stat(filePath);
+    const cached = sessionNameCache.get(sessionCacheKey(filePath));
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.name;
+    // Cold cache reads use asynchronous file I/O so listing long sessions does
+    // not pause Pi's WebSocket events or token streaming.
+    const name = (await inspectSessionFileTailAsync(filePath)).name;
+    cacheSessionName(filePath, stat, name);
+    return name;
+  }
+
+  function rememberCurrentSessionName(filePath: string, name: string): void {
+    const stat = fs.statSync(filePath);
+    cacheSessionName(filePath, stat, name);
   }
 
   function flushSessionFile(filePath: string): void {
@@ -546,7 +701,11 @@ export default function (pi: ExtensionAPI) {
     } finally {
       fs.closeSync(fd);
     }
-    if (readLatestSessionName(filePath) !== name) throw new Error("rename_verify_failed");
+    // Verify independently before populating the cache. A stale cache must
+    // never be able to turn an unsuccessful disk write into reported success.
+    const verified = inspectSessionFileTail(filePath).name;
+    if (verified !== name) throw new Error("rename_verify_failed");
+    rememberCurrentSessionName(filePath, name);
     return name;
   }
 
@@ -589,7 +748,9 @@ export default function (pi: ExtensionAPI) {
       pi.setSessionName(name);
       if (pi.getSessionName() !== name) throw new Error("rename_verify_failed");
       flushSessionFile(filePath);
-      if (readLatestSessionName(filePath) !== name) throw new Error("rename_verify_failed");
+      const verified = inspectSessionFileTail(filePath).name;
+      if (verified !== name) throw new Error("rename_verify_failed");
+      rememberCurrentSessionName(filePath, name);
       return { name, live: true, ownerPid: process.pid };
     }
 
@@ -3080,7 +3241,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     rl.close();
     stream.destroy();
 
-    const latestName = readLatestSessionName(filePath);
+    const latestName = await readLatestSessionNameForList(filePath);
     if (latestName !== null) sessionName = latestName || null;
 
     if (!header?.id) return null;
@@ -3247,7 +3408,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             rl.close();
             stream.destroy();
 
-            const latestName = readLatestSessionName(filePath);
+            const latestName = await readLatestSessionNameForList(filePath);
             if (latestName !== null) sessionName = latestName;
 
             if (matches.length > 0) {
@@ -3510,6 +3671,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     runtimeActive = false;
     runtimeGeneration++;
     latestCtx = null;
+    persistSessionNameCache();
     stopServer();
     console.log("[Mirror] Server shut down");
   });
