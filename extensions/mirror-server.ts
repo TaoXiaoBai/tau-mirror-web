@@ -932,8 +932,15 @@ export default function (pi: ExtensionAPI) {
   // when a real official or relay value exists.
   const INVENTED_CONTEXT_DEFAULTS = new Set([128000, 16384, 258000, 1000000]);
 
-  type OfficialModelInfo = { contextWindow?: number; maxTokens?: number; name?: string };
-  let officialCatalog: Map<string, OfficialModelInfo> | null = null;
+  type ModelInputType = "text" | "image";
+  type OfficialModelInfo = {
+    contextWindow?: number;
+    maxTokens?: number;
+    name?: string;
+    reasoning?: boolean;
+    input?: ModelInputType[];
+  };
+  let officialCatalog: Map<string, OfficialModelInfo[]> | null = null;
   const OFFICIAL_PRIMARY_FILES = [
     "openai.json", "openai-codex.json", "anthropic.json", "google.json", "google-vertex.json",
     "xai.json", "deepseek.json", "mistral.json", "groq.json", "moonshotai.json", "moonshotai-cn.json",
@@ -978,13 +985,18 @@ export default function (pi: ExtensionAPI) {
               contextWindow: readPositiveNumber(node.contextWindow ?? node.context_window),
               maxTokens: readPositiveNumber(node.maxTokens ?? node.max_tokens),
               name: node.name,
+              reasoning: typeof node.reasoning === "boolean" ? node.reasoning : undefined,
+              input: normalizeModelInput(node.input),
             };
             const id = String(node.id);
             const addKey = (key: string) => {
               if (!key || GENERIC_MODEL_IDS.has(key.toLowerCase())) return;
-              if (!officialCatalog!.has(key)) officialCatalog!.set(key, rec);
               const lower = key.toLowerCase();
-              if (lower && !officialCatalog!.has(lower)) officialCatalog!.set(lower, rec);
+              const current = officialCatalog!.get(lower) || [];
+              // The same ID may exist under several official APIs (for example
+              // OpenAI and Codex). Keep all records and union capabilities.
+              if (!current.includes(rec)) current.push(rec);
+              officialCatalog!.set(lower, current);
             };
             addKey(id);
             const last = id.split(/[\/:]/).filter(Boolean).pop() || "";
@@ -1021,8 +1033,22 @@ export default function (pi: ExtensionAPI) {
   function lookupOfficialModel(modelId: string): OfficialModelInfo | undefined {
     const catalog = loadOfficialCatalog();
     for (const key of officialIdCandidates(modelId)) {
-      const hit = catalog.get(key) || catalog.get(key.toLowerCase());
-      if (hit) return hit;
+      const hits = catalog.get(key.toLowerCase());
+      if (!hits?.length) continue;
+      const first = hits[0];
+      return {
+        contextWindow: first.contextWindow,
+        maxTokens: first.maxTokens,
+        name: first.name,
+        reasoning: hits.some((item) => item.reasoning === true)
+          ? true
+          : hits.every((item) => item.reasoning === false)
+            ? false
+            : first.reasoning,
+        input: hits.some((item) => item.input?.includes("image"))
+          ? ["text", "image"]
+          : first.input,
+      };
     }
     return undefined;
   }
@@ -1133,13 +1159,85 @@ export default function (pi: ExtensionAPI) {
     return undefined;
   }
 
-  function upstreamInput(model: any): ("text" | "image")[] | undefined {
-    const raw = model?.input || model?.input_modalities || model?.modalities?.input || model?.architecture?.input_modalities;
+  function normalizeModelInput(raw: any): ModelInputType[] | undefined {
     if (!Array.isArray(raw)) return undefined;
-    const input = raw.map((item: any) => String(item).toLowerCase());
-    const next: ("text" | "image")[] = ["text"];
-    if (input.some((item: string) => item.includes("image") || item.includes("vision"))) next.push("image");
-    return next;
+    const values = raw.map((item: any) => String(item).toLowerCase());
+    const input: ModelInputType[] = [];
+    if (values.some((item: string) => item.includes("text"))) input.push("text");
+    if (values.some((item: string) => item.includes("image") || item.includes("vision"))) input.push("image");
+    return input.length > 0 ? input : undefined;
+  }
+
+  function capabilityFlag(value: any): boolean | undefined {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.toLowerCase();
+      if (["true", "yes", "supported", "enabled", "available"].includes(normalized)) return true;
+      if (["false", "no", "unsupported", "disabled", "unavailable"].includes(normalized)) return false;
+    }
+    if (value && typeof value === "object") {
+      return capabilityFlag(value.supported ?? value.enabled ?? value.available);
+    }
+    return undefined;
+  }
+
+  function upstreamImageSupport(model: any): boolean | undefined {
+    if (!model || typeof model !== "object") return undefined;
+    const input = normalizeModelInput(
+      model.input ?? model.input_modalities ?? model.modalities?.input ?? model.architecture?.input_modalities,
+    );
+
+    const explicit = [
+      model.supports_images,
+      model.supports_image,
+      model.supports_vision,
+      model.vision,
+      model.capabilities?.image,
+      model.capabilities?.vision,
+      model.capabilities?.image_input,
+      model.features?.vision,
+    ];
+    for (const value of explicit) {
+      const flag = capabilityFlag(value);
+      if (flag !== undefined) return flag;
+    }
+    if (input?.includes("image")) return true;
+    // A provider returning only ["text"] is not an explicit denial. Many
+    // OpenAI-compatible /models endpoints expose an incomplete modality list.
+    return undefined;
+  }
+
+  function inferredModelInput(modelId: string): ModelInputType[] | undefined {
+    const id = normalizeModelId(modelId).toLowerCase();
+    const last = id.split(/[\/:]/).filter(Boolean).pop() || id;
+    if (/embedding|moderation|rerank|speech|tts|transcri|audio-only/.test(last)) return undefined;
+    const multimodal =
+      /(?:^|[-_.])(vision|vl)(?:$|[-_.])/.test(last) ||
+      /^gemini-/.test(last) ||
+      /^claude-(?:3|4|5|haiku|sonnet|opus|fable)/.test(last) ||
+      /^gpt-(?:4o|4\.1|5(?:[.-]|$))/.test(last) ||
+      /^grok-(?:4|5)(?:[.-]|$)/.test(last) ||
+      /^kimi-k(?:2\.[5-9]|[3-9])(?:[.-]|$)/.test(last) ||
+      /^glm-(?:4v|5v)/.test(last) ||
+      /^qwen(?:2|3)?(?:[.-])?vl(?:[.-]|$)/.test(last);
+    return multimodal ? ["text", "image"] : undefined;
+  }
+
+  function resolveModelInput(modelId: string, existing: any, upstream: any): ModelInputType[] {
+    const configured = normalizeModelInput(existing?.input);
+    if ((existing?.inputCustom === true || existing?.inputProviderExplicit === true) && configured) return configured;
+
+    const explicitUpstream = upstreamImageSupport(upstream);
+    if (explicitUpstream === false) return ["text"];
+
+    const official = lookupOfficialModel(modelId)?.input;
+    const inferred = inferredModelInput(modelId);
+    const supportsImage =
+      explicitUpstream === true ||
+      configured?.includes("image") === true ||
+      official?.includes("image") === true ||
+      inferred?.includes("image") === true;
+    return supportsImage ? ["text", "image"] : ["text"];
   }
 
   async function fetchProviderModelMetadata(ctx: ExtensionContext, provider: string, sampleModel: any, force = false) {
@@ -1199,8 +1297,8 @@ export default function (pi: ExtensionAPI) {
     return {
       id,
       name: existing?.name || official?.name || String(upstream?.name || id),
-      reasoning: upstreamReasoning(upstream) ?? existing?.reasoning ?? true,
-      input: upstreamInput(upstream) ?? existing?.input ?? ["text"],
+      reasoning: upstreamReasoning(upstream) ?? existing?.reasoning ?? official?.reasoning ?? true,
+      input: resolveModelInput(id, existing, upstream),
       cost: existing?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       ...(resolved.contextWindow ? { contextWindow: resolved.contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
@@ -1216,13 +1314,59 @@ export default function (pi: ExtensionAPI) {
     return {
       id: normalizeModelId(model.id),
       name: model.name || official?.name || normalizeModelId(model.id),
-      reasoning: model.reasoning ?? true,
-      input: model.input || ["text"],
+      reasoning: model.reasoning ?? official?.reasoning ?? true,
+      input: resolveModelInput(model.id, model, null),
       cost: model.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: readPositiveNumber(model.contextWindow) || official?.contextWindow || 128000,
       maxTokens: readPositiveNumber(model.maxTokens) || official?.maxTokens || 16384,
+      ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+      ...(model.samplingParams ? { samplingParams: model.samplingParams } : {}),
+      ...(model.headers ? { headers: model.headers } : {}),
+      ...(model.compat ? { compat: model.compat } : {}),
     };
   }
+
+  function repairSavedModelCapabilities(): void {
+    const file = readModelsFile();
+    const changedProviders: Array<[string, any]> = [];
+    let changed = false;
+    for (const [provider, cfg] of Object.entries(file.providers || {})) {
+      if (!cfg || !Array.isArray(cfg.models)) continue;
+      let providerChanged = false;
+      for (const model of cfg.models) {
+        if (!model?.id) continue;
+        const resolvedInput = resolveModelInput(model.id, model, null);
+        const currentInput = normalizeModelInput(model.input) || [];
+        if (JSON.stringify(currentInput) === JSON.stringify(resolvedInput)) continue;
+        model.input = resolvedInput;
+        providerChanged = true;
+        changed = true;
+      }
+      if (providerChanged) changedProviders.push([provider, cfg]);
+    }
+    if (!changed) return;
+
+    writeModelsFile(file);
+    for (const [provider, cfg] of changedProviders) {
+      try {
+        pi.registerProvider(provider, {
+          name: cfg.name || provider,
+          baseUrl: cfg.baseUrl,
+          api: normalizeRelayApi(cfg.baseUrl, cfg.api),
+          apiKey: cfg.apiKey,
+          authHeader: cfg.authHeader !== false,
+          compat: defaultRelayCompat(cfg.baseUrl, cfg.api, cfg.compat),
+          headers: cfg.headers,
+          models: cfg.models.filter((model: any) => model?.id).map(toPiModelConfig),
+        });
+      } catch (error: any) {
+        console.warn(`[Mirror] Could not apply repaired capabilities for ${provider}: ${error?.message || error}`);
+      }
+    }
+    console.log(`[Mirror] Repaired model capabilities for ${changedProviders.length} provider(s)`);
+  }
+
+  repairSavedModelCapabilities();
 
   // Full model-list sync for providers: fetch /v1/models, register the
   // discovered models into Pi so they stay selectable, then return a display
@@ -1260,6 +1404,7 @@ export default function (pi: ExtensionAPI) {
           return {
             ...model,
             ...resolved,
+            input: resolveModelInput(model.id, fileEntry, null),
             providerMetadataError: meta.error,
             providerMetadataCheckedAt: meta.fetchedAt,
           };
@@ -1349,12 +1494,14 @@ export default function (pi: ExtensionAPI) {
         upstream,
         providerResult?.error,
       );
+      const input = resolveModelInput(model.id, fileEntry || model, upstream);
       if (!LIVE_MODEL_METADATA_PROVIDERS.has(model.provider) && !fileEntry && !resolved.officialContextWindow) {
-        return { ...model, ...resolved, contextSource: resolved.contextWindow ? "pi-registry" : resolved.contextSource };
+        return { ...model, ...resolved, input, contextSource: resolved.contextWindow ? "pi-registry" : resolved.contextSource };
       }
       return {
         ...model,
         ...resolved,
+        input,
         providerMetadataCheckedAt: providerResult?.fetchedAt,
         providerMetadataError: providerResult?.error,
       };
@@ -2482,11 +2629,13 @@ export default function (pi: ExtensionAPI) {
                   const resolved = resolveModelContext(item.id, prev, item.raw);
                   const maxTokens = upstreamMaxTokens(item.raw) || official?.maxTokens || prev?.maxTokens;
                   const persistWindow = resolved.customContextWindow || upstreamContextWindow(item.raw);
+                  const explicitImageSupport = upstreamImageSupport(item.raw);
                   return {
                     id: item.id,
                     name: prev?.name || official?.name || item.name || item.id,
-                    reasoning: upstreamReasoning(item.raw) ?? prev?.reasoning ?? true,
-                    input: upstreamInput(item.raw) || prev?.input || ["text"],
+                    reasoning: upstreamReasoning(item.raw) ?? prev?.reasoning ?? official?.reasoning ?? true,
+                    input: resolveModelInput(item.id, prev, item.raw),
+                    ...(explicitImageSupport === false ? { inputProviderExplicit: true } : {}),
                     ...(persistWindow ? { contextWindow: persistWindow } : {}),
                     ...(maxTokens ? { maxTokens } : {}),
                     ...(resolved.customContextWindow ? { contextCustom: true } : {}),
