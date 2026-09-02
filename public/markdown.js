@@ -264,65 +264,70 @@ export function renderUserMarkdown(text) {
   return html.replace(/\n$/, '');
 }
 
-function renderInline(text) {
-  // Inline code (must come first to protect content)
-  const codeSpans = [];
-  text = text.replace(/`([^`]+)`/g, (_, code) => {
-    const idx = codeSpans.length;
-    codeSpans.push(`<code>${escapeHtml(code)}</code>`);
-    return `%%ICODE${idx}%%`;
+function renderInline(source) {
+  // Escape untrusted model/user text before adding the small HTML subset Tau
+  // owns. Placeholders keep code, math, links, and images out of later regexes.
+  const protectedHtml = [];
+  const protect = (html) => {
+    const idx = protectedHtml.length;
+    protectedHtml.push(html);
+    return `\u0002TAU${idx}\u0003`;
+  };
+
+  let text = String(source ?? '');
+  text = text.replace(/`([^`]+)`/g, (_, code) => protect(`<code>${escapeHtml(code)}</code>`));
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => protect(escapeHtml(match)));
+  text = text.replace(/\$(?=[^\d\s])[^$\n]+?(?<=\S)\$/g, (match) => protect(escapeHtml(match)));
+
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, rawUrl) => {
+    const url = safeMarkdownUrl(rawUrl, true);
+    if (!url) return escapeHtml(match);
+    return protect(`<img src="${escapeAttribute(url)}" alt="${escapeAttribute(alt)}" class="inline-image" loading="lazy">`);
+  });
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, rawUrl) => {
+    const url = safeMarkdownUrl(rawUrl, false);
+    if (!url) return escapeHtml(match);
+    return protect(`<a href="${escapeAttribute(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+  });
+  text = text.replace(/(^|[\s(])(https?:\/\/[^\s<>"']+)/g, (match, prefix, rawUrl) => {
+    const url = safeMarkdownUrl(rawUrl, false);
+    if (!url) return escapeHtml(match);
+    return `${prefix}${protect(`<a href="${escapeAttribute(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(rawUrl)}</a>`)}`;
   });
 
-  // Math (protect $$...$$ and $...$ before *, _, etc. corrupt them)
-  const mathSpans = [];
-  // $$...$$ first (greedy, for display math appearing inline or in lists)
-  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-    const idx = mathSpans.length;
-    mathSpans.push(match);
-    return `%%MATHX${idx}%%`;
-  });
-  // Then $...$ (inline math — opening $ not followed by digit/space).
-  // This avoids matching currency amounts like $100.
-  text = text.replace(/\$(?=[^\d\s])[^$\n]+?(?<=\S)\$/g, (match) => {
-    const idx = mathSpans.length;
-    mathSpans.push(match);
-    return `%%MATHX${idx}%%`;
-  });
-
-  // Images (before links so ![...](...) isn't caught by link regex)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="inline-image">');
-
-  // Bold + italic
+  text = escapeHtml(text);
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-
-  // Bold
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
-
-  // Italic
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
   text = text.replace(/_(.+?)_/g, '<em>$1</em>');
-
-  // Strikethrough
   text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
 
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return text.replace(/\u0002TAU(\d+)\u0003/g, (_, idx) => protectedHtml[Number(idx)] || '');
+}
 
-  // Auto-link bare URLs
-  text = text.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+function safeMarkdownUrl(raw, image) {
+  const value = String(raw || '').trim();
+  if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  if (image && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(value)) return value;
+  try {
+    const url = new URL(value, window.location.href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    // Markdown images trigger requests without a click. Keep them same-origin
+    // to prevent model/user text from probing LAN services or tracking readers.
+    if (image && url.origin !== window.location.origin) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
 
-  // Restore math (before inline code so math inside code stays as code)
-  text = text.replace(/%%MATHX(\d+)%%/g, (_, idx) => mathSpans[parseInt(idx)]);
-
-  // Restore inline code
-  text = text.replace(/%%ICODE(\d+)%%/g, (_, idx) => codeSpans[parseInt(idx)]);
-
-  return text;
+function escapeAttribute(text) {
+  return escapeHtml(text).replace(/'/g, '&#39;');
 }
 
 function escapeHtml(text) {
-  return text
+  return String(text ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

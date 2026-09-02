@@ -180,20 +180,39 @@ export class MessageRenderer {
     const div = document.createElement('div');
     div.className = `message user${isHistory ? ' history' : ''}`;
 
-    let imagesHtml = '';
-    if (message.images && message.images.length > 0) {
-      imagesHtml = '<div class="message-images">' +
-        message.images.map(img => {
-          const src = img.data.startsWith('data:') ? img.data : `data:${img.mimeType || 'image/png'};base64,${img.data}`;
-          return `<img class="message-image" src="${src}" alt="已添加的图片" />`;
-        }).join('') +
-        '</div>';
+    const contentEl = document.createElement('div');
+    contentEl.className = 'message-content';
+    if (Array.isArray(message.images) && message.images.length > 0) {
+      const imagesEl = document.createElement('div');
+      imagesEl.className = 'message-images';
+      const allowedMimes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+      for (const image of message.images) {
+        const data = String(image?.data || '');
+        const mime = allowedMimes.has(image?.mimeType) ? image.mimeType : 'image/png';
+        const src = data.startsWith('data:')
+          ? (/^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(data) ? data : '')
+          : (/^[a-z0-9+/=]+$/i.test(data) ? `data:${mime};base64,${data}` : '');
+        if (!src) continue;
+        const img = document.createElement('img');
+        img.className = 'message-image';
+        img.src = src;
+        img.alt = '已添加的图片';
+        img.loading = 'lazy';
+        imagesEl.appendChild(img);
+      }
+      if (imagesEl.childElementCount > 0) contentEl.appendChild(imagesEl);
     }
+    const markdownEl = document.createElement('div');
+    markdownEl.className = 'user-markdown';
+    markdownEl.innerHTML = renderUserMarkdown(message.content);
+    contentEl.appendChild(markdownEl);
 
-    div.innerHTML = `
-      <div class="message-content">${imagesHtml}${renderUserMarkdown(message.content)}</div>
-      <button class="message-copy-btn" aria-label="复制消息"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-    `;
+    div.appendChild(contentEl);
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'message-copy-btn';
+    copyBtn.setAttribute('aria-label', '复制消息');
+    copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    div.appendChild(copyBtn);
     this._setupCopyBtn(div);
     this._append(div);
     if (isHistory) {
@@ -211,7 +230,7 @@ export class MessageRenderer {
 
     const div = document.createElement('div');
     div.className = `message assistant${isHistory ? ' history' : ''}`;
-    div.dataset.messageId = message.id || 'streaming';
+    div.dataset.messageId = message.id || message.responseId || 'streaming';
 
     let contentHtml = '';
     let usageHtml = '';

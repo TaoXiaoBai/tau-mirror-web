@@ -6,9 +6,9 @@
  * and sends assistant responses back via iMessage.
  *
  * Config via environment variables:
- *   BB_PASSWORD  - BlueBubbles server password (default: REMOVED_BLUEBUBBLES_PASSWORD)
- *   BB_URL       - BlueBubbles server URL (default: http://localhost:1234)
- *   BB_PHONE     - Phone number to bridge (default: REMOVED_PRIVATE_PHONE)
+ *   BB_PASSWORD  - BlueBubbles server password (required)
+ *   BB_URL       - BlueBubbles server URL (default: http://127.0.0.1:1234)
+ *   BB_PHONE     - Phone number to bridge (required)
  *   BB_POLL_INTERVAL - Poll interval in ms (default: 2000)
  */
 
@@ -18,11 +18,15 @@ import * as path from "node:path";
 import * as http from "node:http";
 import * as https from "node:https";
 
-const BB_PASSWORD = process.env.BB_PASSWORD || "REMOVED_BLUEBUBBLES_PASSWORD";
-const BB_URL = process.env.BB_URL || "http://localhost:1234";
-const BB_PHONE = process.env.BB_PHONE || "REMOVED_PRIVATE_PHONE";
-const BB_POLL_INTERVAL = parseInt(process.env.BB_POLL_INTERVAL || "2000");
+const BB_PASSWORD = process.env.BB_PASSWORD || "";
+const BB_URL = process.env.BB_URL || "http://127.0.0.1:1234";
+const BB_PHONE = process.env.BB_PHONE || "";
+const parsedPollInterval = Number.parseInt(process.env.BB_POLL_INTERVAL || "2000", 10);
+const BB_POLL_INTERVAL = Number.isFinite(parsedPollInterval)
+  ? Math.max(1000, Math.min(60000, parsedPollInterval))
+  : 2000;
 const CHAT_GUID = `iMessage;-;${BB_PHONE}`;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ATTACHMENTS_DIR = path.join(process.env.HOME || "~", "claude-memory/imessage/attachments");
 
 export default function (pi: ExtensionAPI) {
@@ -38,9 +42,16 @@ export default function (pi: ExtensionAPI) {
   // HTTP helpers
   // ═══════════════════════════════════════
 
+  function isAllowedBlueBubblesUrl(url: URL): boolean {
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (url.username || url.password) return false;
+    return true;
+  }
+
   function request(method: string, urlPath: string, body?: any): Promise<any> {
     return new Promise((resolve, reject) => {
       const url = new URL(urlPath, BB_URL);
+      if (!isAllowedBlueBubblesUrl(url)) { reject(new Error("Invalid BB_URL")); return; }
       url.searchParams.set("password", BB_PASSWORD);
 
       const mod = url.protocol === "https:" ? https : http;
@@ -66,7 +77,8 @@ export default function (pi: ExtensionAPI) {
 
   function downloadAttachment(guid: string, mime: string): Promise<{ path: string; isAudio: boolean } | null> {
     return new Promise((resolve) => {
-      const url = new URL(`/api/v1/attachment/${guid}/download`, BB_URL);
+      const url = new URL(`/api/v1/attachment/${encodeURIComponent(guid)}/download`, BB_URL);
+      if (!isAllowedBlueBubblesUrl(url)) { resolve(null); return; }
       url.searchParams.set("password", BB_PASSWORD);
 
       const mod = url.protocol === "https:" ? https : http;
@@ -82,12 +94,25 @@ export default function (pi: ExtensionAPI) {
         };
         const isAudio = (contentType || "").startsWith("audio/");
         const ext = extMap[contentType || ""] || "";
-        const filename = `${guid.replace(/\//g, "_")}${ext}`;
+        const safeGuid = guid.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "attachment";
+        const filename = `${safeGuid}${ext}`;
         const filepath = path.join(ATTACHMENTS_DIR, filename);
 
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let totalBytes = 0;
+        let oversized = false;
+        res.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_ATTACHMENT_BYTES) {
+            oversized = true;
+            chunks.length = 0;
+            res.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on("end", () => {
+          if (oversized) { resolve(null); return; }
           fs.writeFileSync(filepath, Buffer.concat(chunks));
           log(`Downloaded attachment: ${filepath}`);
           resolve({ path: filepath, isAudio });
@@ -308,6 +333,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
+
+    if (!BB_PASSWORD || !BB_PHONE) {
+      enabled = false;
+      log("Bridge disabled — set both BB_PASSWORD and BB_PHONE");
+      return;
+    }
 
     // Check if BlueBubbles is reachable
     try {

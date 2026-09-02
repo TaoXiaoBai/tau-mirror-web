@@ -28,7 +28,8 @@ function loadTauSettings(): { port: number; host: string; autoStart: boolean; us
   } catch {}
   return {
     port: parseInt(process.env.TAU_MIRROR_PORT || settings.port || "3001"),
-    host: process.env.TAU_HOST || settings.host || "0.0.0.0",
+    // Secure by default: remote/LAN access must be explicitly enabled.
+    host: process.env.TAU_HOST || settings.host || "127.0.0.1",
     autoStart: !(
       process.env.TAU_DISABLED === "1" || process.env.TAU_DISABLED === "true" ||
       settings.disabled === true
@@ -42,17 +43,27 @@ function loadTauSettings(): { port: number; host: string; autoStart: boolean; us
 
 const TAU_SETTINGS = loadTauSettings();
 const PORT = TAU_SETTINGS.port;
-const HOST = TAU_SETTINGS.host;
 const TAU_AUTO_START = TAU_SETTINGS.autoStart;
 const AUTH_USER = TAU_SETTINGS.user;
 const AUTH_PASS = TAU_SETTINGS.pass;
 const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
+const REQUESTED_HOST = TAU_SETTINGS.host;
+const REQUESTED_LOOPBACK = REQUESTED_HOST === "127.0.0.1" || REQUESTED_HOST === "::1" || REQUESTED_HOST === "localhost";
+// Never make Pi unavailable because of an unsafe old setting. Fall back to
+// loopback and require a restart after credentials are configured.
+const HOST = !REQUESTED_LOOPBACK && (!AUTH_CONFIGURED || !authEnabled) ? "127.0.0.1" : REQUESTED_HOST;
 // @ts-ignore — __dirname is provided by jiti at runtime
 const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
 const STATIC_ROOT = path.resolve(STATIC_DIR);
 const STATIC_DIR_PREFIX = STATIC_ROOT.endsWith(path.sep) ? STATIC_ROOT : `${STATIC_ROOT}${path.sep}`;
 const MAX_FILE_PREVIEW = 8 * 1024 * 1024;
+const MAX_HTTP_BODY = 12 * 1024 * 1024;
+const MAX_WS_MESSAGE = 12 * 1024 * 1024;
+const IS_LOOPBACK_BIND = HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost";
+if (HOST !== REQUESTED_HOST) {
+  console.warn(`[Mirror] Refusing unauthenticated listener on ${REQUESTED_HOST}; using 127.0.0.1 instead`);
+}
 
 function safeStaticPath(urlPath: string): string | null {
   let decoded: string;
@@ -66,6 +77,50 @@ function setSecurityHeaders(res: http.ServerResponse) {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'");
+}
+
+function requestHasSameOrigin(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const host = req.headers.host;
+  if (!host || /[\r\n]/.test(host)) return false;
+  return origin === `http://${host}` || origin === `https://${host}`;
+}
+
+function readJsonBody(req: http.IncomingMessage, limit = MAX_HTTP_BODY): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(declared) && declared > limit) {
+      reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+      req.resume();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > limit) {
+        settled = true;
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch { reject(Object.assign(new Error('Invalid JSON'), { statusCode: 400 })); }
+    });
+    req.on('error', (error) => {
+      if (!settled) reject(error);
+      settled = true;
+    });
+  });
 }
 
 function findPublicDir(): string {
@@ -346,9 +401,10 @@ function cleanupZombieInstances() {
 
 function isZombieProcess(pid: number): boolean {
   if (process.platform === "win32") return false;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
   try {
-    const { execSync } = require("node:child_process");
-    const tty = execSync(`ps -o tty= -p ${pid}`, { encoding: "utf8" }).trim();
+    const { execFileSync } = require("node:child_process");
+    const tty = execFileSync("ps", ["-o", "tty=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return !tty || tty === "??" || tty === "-";
   } catch {
     return true;
@@ -417,6 +473,30 @@ export default function (pi: ExtensionAPI) {
       return;
     },
   });
+
+  function workspaceRoot(): string {
+    return path.resolve(latestCtx?.cwd || process.cwd());
+  }
+
+  function resolveAllowedWorkspacePath(candidate: string, expected: "file" | "directory" | "either" = "either"): string | null {
+    if (!candidate || typeof candidate !== "string") return null;
+    const root = workspaceRoot();
+    const resolved = path.resolve(candidate);
+    const relative = path.relative(root, resolved);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    try {
+      const stat = fs.statSync(resolved);
+      const realRoot = fs.realpathSync(root);
+      const real = fs.realpathSync(resolved);
+      const realRelative = path.relative(realRoot, real);
+      if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) return null;
+      if (expected === "file" && !stat.isFile()) return null;
+      if (expected === "directory" && !stat.isDirectory()) return null;
+      return resolved;
+    } catch {
+      return null;
+    }
+  }
 
   function resolveAllowedSessionPath(candidate: string): string | null {
     if (!candidate) return null;
@@ -1704,6 +1784,17 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // /qr command — show QR code to connect
   // ═══════════════════════════════════════
+  function openExternal(url: string): void {
+    const { execFile } = require("node:child_process");
+    if (process.platform === "win32") {
+      execFile("rundll32.exe", ["url.dll,FileProtocolHandler", url]);
+    } else if (process.platform === "darwin") {
+      execFile("open", [url]);
+    } else {
+      execFile("xdg-open", [url]);
+    }
+  }
+
   pi.registerCommand("tau", {
     description: "Open Tau web UI in browser",
     handler: async (_args, ctx) => {
@@ -1711,8 +1802,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Mirror server not running yet", "warning");
         return;
       }
-      const { exec } = require("node:child_process");
-      exec(`open "${mirrorUrl}"`);
+      openExternal(mirrorUrl);
       ctx.ui.notify(`Opened ${mirrorUrl}`, "info");
     },
   });
@@ -1726,9 +1816,8 @@ export default function (pi: ExtensionAPI) {
       }
       const qrPageUrl = `${mirrorUrl}/api/qr`;
       ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
-      // Open in default browser
-      const { exec } = require("node:child_process");
-      exec(`open "${qrPageUrl}"`);
+      // Open in default browser.
+      openExternal(qrPageUrl);
     },
   });
 
@@ -1766,6 +1855,12 @@ export default function (pi: ExtensionAPI) {
           contextUsage: ctx.getContextUsage(),
         } });
       } else if (eventType === "thinking_level_select") {
+        broadcast({ type: "event", event: {
+          type: eventType,
+          ...event,
+          contextUsage: ctx.getContextUsage(),
+        } });
+      } else if (eventType === "agent_end") {
         broadcast({ type: "event", event: {
           type: eventType,
           ...event,
@@ -2535,11 +2630,14 @@ export default function (pi: ExtensionAPI) {
           try {
             const sessionFile = ctx.sessionManager.getSessionFile();
             if (!sessionFile) throw new Error("No session file to export");
-            const { execSync } = require("node:child_process");
-            const args = command.outputPath
-              ? `"${sessionFile}" "${command.outputPath}"`
-              : `"${sessionFile}"`;
-            const output = execSync(`pi --export ${args}`, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
+            const { execFileSync } = require("node:child_process");
+            const args = ["--export", sessionFile];
+            if (command.outputPath) {
+              const outputPath = resolveAllowedWorkspacePath(String(command.outputPath));
+              if (!outputPath) throw new Error("Export path must already exist inside the active workspace");
+              args.push(outputPath);
+            }
+            const output = execFileSync("pi", args, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
             // pi prints the output path
             const result = output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
             sendTo(ws, success("export_html", { path: result }));
@@ -2570,6 +2668,10 @@ export default function (pi: ExtensionAPI) {
         case "set_auth": {
           if (!AUTH_CONFIGURED) {
             sendTo(ws, error("set_auth", "No credentials configured. Set tau.user and tau.pass in settings.json"));
+            break;
+          }
+          if (!IS_LOOPBACK_BIND && command.enabled !== true) {
+            sendTo(ws, error("set_auth", "Authentication cannot be disabled on a non-loopback listener"));
             break;
           }
           authEnabled = !!command.enabled;
@@ -2805,7 +2907,11 @@ export default function (pi: ExtensionAPI) {
 
     // Handle API routes
     if (urlPath.startsWith("/api/")) {
-      handleApiRoute(req, res, urlPath);
+      void handleApiRoute(req, res, urlPath).catch((error: any) => {
+        if (res.headersSent || res.writableEnded) return;
+        res.writeHead(error?.statusCode || 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: error?.message || "Internal server error" }));
+      });
       return;
     }
 
@@ -2866,17 +2972,18 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // API routes (sessions list, etc.)
   // ═══════════════════════════════════════
-  function handleApiRoute(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string) {
+  async function handleApiRoute(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string) {
     setSecurityHeaders(res);
-    // The control plane is same-origin by default. Do not expose wildcard CORS.
+    // The control plane is same-origin only. This blocks cross-site browser
+    // requests even when Basic Auth credentials are cached by the browser.
     const origin = req.headers.origin;
     const host = req.headers.host || "localhost";
-    if (origin && origin !== `http://${host}` && origin !== `https://${host}`) {
+    if (!requestHasSameOrigin(req)) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Forbidden origin" }));
       return;
     }
-    res.setHeader("Access-Control-Allow-Origin", origin || `http://${host}`);
+    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Vary", "Origin");
@@ -2927,11 +3034,17 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         res.end(JSON.stringify({ error: "path required" }));
         return;
       }
+      const allowedPath = resolveAllowedWorkspacePath(filePath, "file");
+      if (!allowedPath) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "File is outside the active workspace" }));
+        return;
+      }
       const IMAGE_PREVIEW_MIMES: Record<string, string> = {
         png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-        gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", ico: "image/x-icon",
+        gif: "image/gif", webp: "image/webp", ico: "image/x-icon",
       };
-      const ext = path.extname(filePath).toLowerCase().slice(1);
+      const ext = path.extname(allowedPath).toLowerCase().slice(1);
       const mimeType = IMAGE_PREVIEW_MIMES[ext];
       if (!mimeType) {
         res.writeHead(415, { "Content-Type": "application/json" });
@@ -2939,11 +3052,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         return;
       }
       try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) throw new Error("Not a file");
+        const stat = fs.statSync(allowedPath);
         if (stat.size > MAX_FILE_PREVIEW) throw new Error("File too large");
-        res.writeHead(200, { "Content-Type": mimeType, "Cache-Control": "max-age=60" });
-        fs.createReadStream(filePath).pipe(res);
+        res.writeHead(200, { "Content-Type": mimeType, "Cache-Control": "private, max-age=60" });
+        fs.createReadStream(allowedPath).pipe(res);
       } catch (err: any) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
@@ -2952,7 +3064,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     if (urlPath === "/api/instances") {
-      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end(JSON.stringify({ instances: getRunningInstances() }));
       return;
     }
@@ -2963,11 +3075,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     if (urlPath === "/api/projects/launch" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
-        try {
-          const { path: projectPath } = JSON.parse(body);
+      try {
+          const { path: projectPath } = await readJsonBody(req, 64 * 1024);
           if (!projectPath || typeof projectPath !== "string") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "path required" }));
@@ -2982,16 +3091,23 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             res.end(JSON.stringify({ error: "Directory not found" }));
             return;
           }
-          const { execSync } = require("node:child_process");
-          const escaped = resolved.replace(/'/g, "'\\''");
-          execSync(`osascript -e 'tell app "iTerm2" to create window with default profile command "cd '"'"'${escaped}'"'"' && pi"'`);
+          if (process.platform !== "darwin") {
+            res.writeHead(501, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Project launching is supported on macOS only" }));
+            return;
+          }
+          const { execFile } = await import("node:child_process");
+          const shellCommand = `cd ${JSON.stringify(path.resolve(resolved))} && pi`;
+          const script = 'tell app "iTerm2" to create window with default profile command ' + JSON.stringify(shellCommand);
+          execFile("osascript", ["-e", script], (error) => {
+            if (error) console.error("[Mirror] project launch failed:", error.message);
+          });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (e: any) {
-          res.writeHead(500, { "Content-Type": "application/json" });
+          res.writeHead(e?.statusCode || 500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));
         }
-      });
       return;
     }
 
@@ -3014,7 +3130,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       try {
         const filesUrl = new URL(`http://localhost${req.url}`);
         const explicitPath = filesUrl.searchParams.get("path");
-        let dirPath = explicitPath || process.cwd();
+        let dirPath = explicitPath || workspaceRoot();
         if (!explicitPath && latestCtx) {
           try {
             const entries = latestCtx.sessionManager.getEntries();
@@ -3022,7 +3138,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             if (sessionEntry?.cwd) dirPath = sessionEntry.cwd;
           } catch {}
         }
-        serveFileList(res, dirPath);
+        const allowedDir = resolveAllowedWorkspacePath(dirPath, "directory");
+        if (!allowedDir) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Directory is outside the active workspace" }));
+          return;
+        }
+        serveFileList(res, allowedDir);
       } catch (err: any) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
@@ -3032,21 +3154,17 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     // File browser: open file natively
     if (urlPath === "/api/open" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
         try {
-          const { filePath: fp } = JSON.parse(body);
-          if (!fp || typeof fp !== "string") {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "filePath required" }));
+          const { filePath: requestedPath } = await readJsonBody(req, 64 * 1024);
+          const fp = resolveAllowedWorkspacePath(String(requestedPath || ""));
+          if (!fp) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Path is outside the active workspace" }));
             return;
           }
           const { execFile } = await import("node:child_process");
           if (process.platform === "win32") {
-            const { exec } = await import("node:child_process");
-            const safe = fp.replace(/'/g, "''").replace(/"/g, '');
-            exec(`powershell -NoProfile -WindowStyle Hidden -Command "& { $wsh = New-Object -ComObject WScript.Shell; $wsh.Run('explorer \\"${safe}\\"', 1, $false) }"`, (err) => {
+            execFile("explorer.exe", [fp], (err) => {
               if (err) console.error("[Mirror] open failed:", err.message);
             });
           } else if (process.platform === "darwin") {
@@ -3061,10 +3179,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (err: any) {
-          res.writeHead(500, { "Content-Type": "application/json" });
+          res.writeHead(err?.statusCode || 500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
         }
-      });
       return;
     }
 
@@ -3088,27 +3205,27 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     // RPC proxy — handle via WebSocket command handler
     if (urlPath === "/api/rpc" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
         try {
-          const command = JSON.parse(body);
-          // Create a fake WebSocket-like object to capture the response
-          const responsePromise = new Promise<any>((resolve) => {
+          const command = await readJsonBody(req);
+          // Create a fake WebSocket-like object to capture the response.
+          const responsePromise = new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("RPC timed out")), 30000);
             const fakeWs = {
               readyState: WebSocket.OPEN,
-              send: (data: string) => resolve(JSON.parse(data)),
+              send: (data: string) => {
+                clearTimeout(timer);
+                resolve(JSON.parse(data));
+              },
             } as any;
-            handleCommand(fakeWs, command);
+            void handleCommand(fakeWs, command);
           });
           const response = await responsePromise;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(response));
         } catch (e: any) {
-          res.writeHead(400, { "Content-Type": "application/json" });
+          res.writeHead(e?.statusCode || 400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));
         }
-      });
       return;
     }
 
@@ -3121,11 +3238,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     // Session delete — only jsonl files inside the Pi sessions directory.
     if (urlPath === "/api/sessions/delete" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
         try {
-          const { filePath } = JSON.parse(body);
+          const { filePath } = await readJsonBody(req, 64 * 1024);
           const sessionPath = resolveAllowedSessionPath(String(filePath || ""));
           if (!sessionPath) {
             res.writeHead(400, { "Content-Type": "application/json" });
@@ -3148,19 +3262,15 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
         } catch (err: any) {
-          res.writeHead(500, { "Content-Type": "application/json" });
+          res.writeHead(err?.statusCode || 500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message || "delete_failed" }));
         }
-      });
       return;
     }
 
     if (urlPath === "/api/sessions/rename" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
         try {
-          const { filePath, name } = JSON.parse(body);
+          const { filePath, name } = await readJsonBody(req, 64 * 1024);
           const sessionPath = resolveAllowedSessionPath(String(filePath || ""));
           if (!sessionPath) {
             res.writeHead(400, { "Content-Type": "application/json" });
@@ -3176,14 +3286,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           res.end(JSON.stringify({ success: true, ...result }));
         } catch (err: any) {
           const message = err?.message || "rename_failed";
-          const code = message === "empty" ? 400 : message === "owner_unavailable" ? 409 : 500;
+          const code = err?.statusCode || (message === "empty" ? 400 : message === "owner_unavailable" ? 409 : 500);
           res.writeHead(code, {
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
           });
           res.end(JSON.stringify({ error: message }));
         }
-      });
       return;
     }
 
@@ -3198,18 +3307,19 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   function getTmuxSessionFiles(): Set<string> {
     if (process.platform === "win32") return new Set();
     try {
-      const { execSync } = require("node:child_process");
-      // Get tmux pane PIDs
-      const paneOutput = execSync("tmux list-panes -a -F '#{pane_pid}' 2>/dev/null", { encoding: "utf8" });
+      const { execFileSync } = require("node:child_process");
+      // Get tmux pane PIDs without invoking a shell.
+      const paneOutput = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_pid}"], { encoding: "utf8" });
       const tmuxFiles = new Set<string>();
 
-      for (const shellPid of paneOutput.trim().split("\n").filter(Boolean)) {
+      for (const shellPid of paneOutput.trim().split("\n").filter((value: string) => /^\d+$/.test(value))) {
         try {
-          // Find Pi (node) processes that are children of tmux shells
-          const children = execSync(`pgrep -P ${shellPid} 2>/dev/null`, { encoding: "utf8" });
-          for (const pid of children.trim().split("\n").filter(Boolean)) {
-            // Check what .jsonl files this process has open
-            const lsofOut = execSync(`lsof -p ${pid} 2>/dev/null | grep '\\.jsonl'`, { encoding: "utf8" });
+          // Find Pi (node) processes that are children of tmux shells.
+          const children = execFileSync("pgrep", ["-P", shellPid], { encoding: "utf8" });
+          for (const pid of children.trim().split("\n").filter((value: string) => /^\d+$/.test(value))) {
+            // Check what .jsonl files this process has open. Filter in-process
+            // rather than piping through grep.
+            const lsofOut = execFileSync("lsof", ["-p", pid], { encoding: "utf8" });
             for (const line of lsofOut.trim().split("\n").filter(Boolean)) {
               const match = line.match(/\/.+\.jsonl$/);
               if (match) tmuxFiles.add(match[0]);
@@ -3542,7 +3652,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       });
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ path: dirPath, items }));
+      res.end(JSON.stringify({ path: dirPath, root: workspaceRoot(), items }));
     } catch (err: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -3682,10 +3792,19 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     // Clean up zombie instances from killed tmux panes etc.
     cleanupZombieInstances();
 
-    server = http.createServer(serveStaticFile);
-    wss = new WebSocketServer({ noServer: true });
+    server = http.createServer({
+      maxHeaderSize: 16 * 1024,
+      requestTimeout: 30000,
+      headersTimeout: 15000,
+    }, serveStaticFile);
+    wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_MESSAGE, perMessageDeflate: false });
 
     server.on("upgrade", (request, socket, head) => {
+      if (!requestHasSameOrigin(request)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       if (authEnabled && !checkBasicAuth(request)) {
         socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Tau\"\r\n\r\n");
         socket.destroy();
@@ -3731,9 +3850,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       ws.on("message", (data) => {
         try {
           const command = JSON.parse(data.toString());
-          handleCommand(ws, command);
+          if (!command || typeof command !== "object" || typeof command.type !== "string") {
+            throw new Error("Invalid command envelope");
+          }
+          void handleCommand(ws, command);
         } catch (e) {
           console.error("[Mirror] Failed to parse client message:", e);
+          try { ws.close(1008, "Invalid message"); } catch {}
         }
       });
 

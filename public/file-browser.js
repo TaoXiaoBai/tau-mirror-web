@@ -44,6 +44,7 @@ export class FileBrowser {
     this.messageInput = messageInput;
     this.onFileInserted = onFileInserted;
     this.currentPath = null;
+    this.rootPath = null;
 
     this.setupDropTarget();
   }
@@ -59,11 +60,15 @@ export class FileBrowser {
       const data = await res.json();
 
       if (data.error) {
-        this.container.innerHTML = `<div class="file-loading">${data.error}</div>`;
+        const errorEl = document.createElement('div');
+        errorEl.className = 'file-loading';
+        errorEl.textContent = data.error;
+        this.container.replaceChildren(errorEl);
         return;
       }
 
       this.currentPath = data.path;
+      this.rootPath = data.root || this.rootPath || data.path;
       this.pathEl.textContent = data.path;
       this.pathEl.title = data.path;
       this.render(data.items);
@@ -74,12 +79,20 @@ export class FileBrowser {
 
   getParentPath() {
     if (!this.currentPath) return null;
+    const key = (value) => String(value || '').replace(/[\\/]+$/, '').toLowerCase();
+    if (this.rootPath && key(this.currentPath) === key(this.rootPath)) return null;
     const sep = this.currentPath.includes('\\') ? '\\' : '/';
     const normalized = this.currentPath.endsWith(sep) ? this.currentPath.slice(0, -1) : this.currentPath;
     const lastSep = normalized.lastIndexOf(sep);
     if (lastSep <= 0) return sep === '/' ? '/' : null;
     const parent = normalized.slice(0, lastSep);
-    return /^[A-Za-z]:$/.test(parent) ? parent + sep : parent;
+    const result = /^[A-Za-z]:$/.test(parent) ? parent + sep : parent;
+    if (this.rootPath) {
+      const rootKey = key(this.rootPath);
+      const resultKey = key(result);
+      if (resultKey !== rootKey && !resultKey.startsWith(rootKey + sep.toLowerCase())) return null;
+    }
+    return result;
   }
 
   render(items) {
@@ -101,11 +114,20 @@ export class FileBrowser {
       const icon = getFileIcon(item.name, item.isDirectory);
       const size = item.isDirectory ? '' : formatSize(item.size);
 
-      el.innerHTML = `
-        <span class="file-icon">${icon}</span>
-        <span class="file-name" title="${item.name}">${item.name}</span>
-        ${size ? `<span class="file-size">${size}</span>` : ''}
-      `;
+      const iconEl = document.createElement('span');
+      iconEl.className = 'file-icon';
+      iconEl.textContent = icon;
+      const nameEl = document.createElement('span');
+      nameEl.className = 'file-name';
+      nameEl.title = item.name;
+      nameEl.textContent = item.name;
+      el.append(iconEl, nameEl);
+      if (size) {
+        const sizeEl = document.createElement('span');
+        sizeEl.className = 'file-size';
+        sizeEl.textContent = size;
+        el.appendChild(sizeEl);
+      }
 
       // Click: navigate directory or insert file path into input
       el.addEventListener('click', () => {

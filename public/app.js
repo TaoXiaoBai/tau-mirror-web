@@ -657,10 +657,14 @@ function handleAgentStart() {
 function handleAgentEnd(event) {
   const msgs = event?.messages || [];
   const last = [...msgs].reverse().find(m => m.role === 'assistant');
+  // message_end should arrive first, but agent_end is a final safety net after
+  // reconnects or extension event loss.
+  if (currentStreamingElement && last) handleMessageEnd(last);
   if (last && last.stopReason === 'error' && last.errorMessage) {
     discardEmptyStreamingBubble();
     showChatError(last.errorMessage);
   }
+  if (event?.contextUsage) applyContextUsage(event.contextUsage);
   state.setStreaming(false);
   setWorkPhase('idle');
   currentStreamingElement = null;
@@ -723,15 +727,21 @@ function resetStreamingDeltas() {
   answerStreamStarted = false;
 }
 
+function ensureStreamingMessage() {
+  if (currentStreamingElement?.isConnected) return currentStreamingElement;
+  resetStreamingDeltas();
+  currentStreamingText = '';
+  currentStreamingThinking = '';
+  currentStreamingElement = messageRenderer.renderAssistantMessage({ content: '' }, true);
+  return currentStreamingElement;
+}
+
 function handleMessageStart(message) {
+  if (!message) return;
   if (message.role === 'assistant') {
-    resetStreamingDeltas();
-    currentStreamingText = '';
-    currentStreamingThinking = '';
-    currentStreamingElement = messageRenderer.renderAssistantMessage(
-      { content: '' },
-      true
-    );
+    // A duplicate start can arrive around reconnect/snapshot recovery. Reuse an
+    // active empty bubble rather than creating two copies of the same answer.
+    ensureStreamingMessage();
   } else if (message.role === 'user') {
     // In mirror mode, user messages from TUI appear via events
     // Only render if we didn't just send this message ourselves
@@ -770,6 +780,13 @@ function handleMessageUpdate(event) {
   const { assistantMessageEvent } = event;
   if (!assistantMessageEvent) return;
 
+  if (assistantMessageEvent.type === 'thinking_delta' || assistantMessageEvent.type === 'text_delta') {
+    // Reconnects can occur after message_start. Never discard later deltas just
+    // because this tab did not observe the beginning of the response.
+    ensureStreamingMessage();
+    state.setStreaming(true);
+  }
+
   if (assistantMessageEvent.type === 'error') {
     const err = assistantMessageEvent.error || {};
     if (err.stopReason === 'aborted') return;
@@ -806,28 +823,41 @@ function handleMessageEnd(message) {
     return;
   }
 
+  const usage = message?.usage || null;
   if (currentStreamingElement) {
     flushStreamingDeltas();
-    // Pass usage info for cost display
-    const usage = message?.usage || null;
-    // Pass thinking content so finalize can render the thinking block
-    messageRenderer.finalizeStreamingMessage(currentStreamingElement, usage, currentStreamingThinking);
+    const finalText = getMessageText(message);
+    if (finalText && finalText !== currentStreamingText) {
+      // Some deltas may have been missed while the socket was reconnecting.
+      // Replace the partial bubble with message_end's authoritative content.
+      currentStreamingElement.remove();
+      messageRenderer.renderAssistantMessage(message, false);
+    } else {
+      // Pass thinking content so finalize can render the thinking block.
+      messageRenderer.finalizeStreamingMessage(currentStreamingElement, usage, currentStreamingThinking);
+    }
     currentStreamingElement = null;
     currentStreamingThinking = '';
     resetStreamingDeltas();
-
-    // Track session cost and tokens
-    if (usage?.cost?.total) {
-      sessionTotalCost += usage.cost.total;
-    }
-    if (usage?.input) {
-      lastUsage = usage;
-      if (!currentContextUsage) lastInputTokens = usage.input + (usage.cacheRead || 0);
-    }
-    updateCostDisplay();
-    updateTokenUsage();
-    showNewMessageBadge();
+  } else if (message?.role === 'assistant') {
+    // Final events are authoritative. If this tab missed message_start and all
+    // deltas while reconnecting, render the complete final message once.
+    messageRenderer.renderAssistantMessage(message, false);
+  } else {
+    return;
   }
+
+  // Track session cost and tokens.
+  if (usage?.cost?.total) {
+    sessionTotalCost += usage.cost.total;
+  }
+  if (usage?.input) {
+    lastUsage = usage;
+    if (!currentContextUsage) lastInputTokens = usage.input + (usage.cacheRead || 0);
+  }
+  updateCostDisplay();
+  updateTokenUsage();
+  showNewMessageBadge();
 }
 
 function handleToolExecutionStart(event) {
@@ -886,6 +916,17 @@ function handleToolExecutionUpdate(event) {
 
 function handleToolExecutionEnd(event) {
   const { toolCallId, result, isError } = event;
+  if (!toolCallId) return;
+  if (!state.getToolExecution(toolCallId)) {
+    // End events are authoritative; reconstruct a card if this tab connected
+    // after the corresponding start/update frames.
+    state.addToolExecution(toolCallId, {
+      toolName: event.toolName || 'tool',
+      args: event.args || {},
+      status: 'pending',
+    });
+    toolCardRenderer.createToolCard(state.getToolExecution(toolCallId));
+  }
   if (pendingToolUpdates.has(toolCallId)) {
     const partial = pendingToolUpdates.get(toolCallId);
     pendingToolUpdates.delete(toolCallId);
@@ -2680,6 +2721,9 @@ function rememberSyncHint(data, entries = data.entries || []) {
 function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   isMirrorMode = true;
+  state.setStreaming(data.isStreaming === true);
+  if (data.isStreaming) setWorkPhase('starting');
+  else setWorkPhase('idle');
   if (data.planMode) applyPlanModeState(data.planMode);
 
   // Track the active session. A snapshot for a different session must never
@@ -2740,6 +2784,7 @@ function handleMirrorSync(data) {
     rememberSyncHint(data, entries);
     updateCostDisplay();
     updateTokenUsage();
+    updateUI();
     return;
   }
 
@@ -2754,6 +2799,8 @@ function handleMirrorSync(data) {
   historyPageAbort = null;
   olderHistoryRequest?.abort('session-changed');
   olderHistoryRequest = null;
+  state.reset();
+  state.setStreaming(data.isStreaming === true);
   messageRenderer.clear();
   toolCardRenderer.clear();
   sessionTotalCost = 0;
@@ -2785,11 +2832,15 @@ function handleMirrorSync(data) {
 
   updateCostDisplay();
   updateTokenUsage();
+  updateUI();
 }
 
 wsClient.addEventListener('mirrorHelloOk', (e) => {
   const data = e.detail || {};
   isMirrorMode = true;
+  state.setStreaming(data.isStreaming === true);
+  if (data.isStreaming) setWorkPhase('starting');
+  else setWorkPhase('idle');
   const helloSessionFile = data.sessionFile || null;
   const sessionChanged = mirrorActiveSessionFile !== helloSessionFile;
   if (sessionChanged) resetConversationMetrics();
@@ -2825,6 +2876,7 @@ wsClient.addEventListener('mirrorHelloOk', (e) => {
   setTimeout(() => fetchModelInfo(), 80);
   updateCostDisplay();
   updateTokenUsage();
+  updateUI();
 });
 
 // Mark all live sessions in the sidebar with a green dot

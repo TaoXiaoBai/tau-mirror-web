@@ -111,7 +111,7 @@ Tau can be configured with environment variables or the optional `tau` block in 
 | Environment variable | Default | Description |
 |---|---:|---|
 | `TAU_MIRROR_PORT` | `3001` | HTTP and WebSocket port |
-| `TAU_HOST` | `0.0.0.0` | Bind address; use `127.0.0.1` for local-only access |
+| `TAU_HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` explicitly for authenticated LAN access |
 | `TAU_STATIC_DIR` | bundled `public/` | Use a different directory for the web UI |
 | `TAU_DISABLED` | `0` | Set to `1` to disable automatic startup |
 | `TAU_USER` / `TAU_PASS` | empty | Enable HTTP Basic Authentication |
@@ -147,7 +147,7 @@ After upgrading the extension, fully restart Pi so backend and RPC changes are l
 
 ## Security and network access
 
-Tau runs inside your Pi process and can expose access to your conversations and tools. For a local-only server, bind it to loopback:
+Tau runs inside your Pi process and can expose access to your conversations and tools. It binds to loopback by default:
 
 ```powershell
 $env:TAU_HOST = "127.0.0.1"
@@ -155,12 +155,14 @@ $env:TAU_HOST = "127.0.0.1"
 
 If you bind to `0.0.0.0` or access Tau from another device:
 
-- Set `TAU_USER` and `TAU_PASS`, or configure equivalent credentials in Pi settings.
+- Set `TAU_USER` and `TAU_PASS`, or configure equivalent credentials in Pi settings. Without enabled authentication, Tau refuses the requested non-loopback address and safely falls back to `127.0.0.1`.
 - Use a trusted private network.
 - Do not forward the port to the public internet without an additional secure proxy and authentication layer.
 - Treat the browser URL and QR code as access to your Pi session.
 
-Session file operations are restricted to `.jsonl` files inside Pi's sessions directory. Running sessions cannot be deleted.
+Session file operations are restricted to `.jsonl` files inside Pi's sessions directory. Running sessions cannot be deleted. File browsing, previews, and native open actions are jailed to the active workspace. HTTP and WebSocket requests are origin-checked and size-limited.
+
+The optional `extensions/imessage-bridge.ts` requires `BB_PASSWORD` and `BB_PHONE` environment variables; it contains no default credentials or personal recipient.
 
 ## How it works
 
