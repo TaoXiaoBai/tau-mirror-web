@@ -214,7 +214,8 @@ export class WebSocketClient extends EventTarget {
         this.dispatchEvent(new CustomEvent('serverError', { detail: message }));
         break;
       case 'session_switch':
-        this.dispatchEvent(new CustomEvent('sessionSwitch'));
+        this.resumeHint = null;
+        this.dispatchEvent(new CustomEvent('sessionSwitch', { detail: message }));
         break;
       case 'mirror_sync':
         this.dispatchEvent(new CustomEvent('mirrorSync', { detail: message }));

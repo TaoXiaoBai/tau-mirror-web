@@ -577,6 +577,7 @@ function handleRPCEvent(event) {
         currentThinkingLevel = event.level;
         updateThinkingBtn();
       }
+      if (event.contextUsage) applyContextUsage(event.contextUsage);
       break;
     case 'tool_execution_start':
       handleToolExecutionStart(event);
@@ -820,8 +821,8 @@ function handleMessageEnd(message) {
       sessionTotalCost += usage.cost.total;
     }
     if (usage?.input) {
-      lastInputTokens = usage.input + (usage.cacheRead || 0);
       lastUsage = usage;
+      if (!currentContextUsage) lastInputTokens = usage.input + (usage.cacheRead || 0);
     }
     updateCostDisplay();
     updateTokenUsage();
@@ -1471,6 +1472,22 @@ function contextSourceCopy(model) {
 function applyContextWindow(model) {
   contextWindowSize = model?.contextWindow || 0;
   contextWindowSource = model?.contextSource || (model?.contextWindow ? 'pi-registry' : 'unknown');
+  // A live Pi estimate is authoritative for the active conversation. Model
+  // metadata is only the fallback used before Pi sends that estimate.
+  if (currentContextUsage && Number(currentContextUsage.contextWindow) > 0) {
+    contextWindowSize = Number(currentContextUsage.contextWindow);
+  }
+  updateTokenUsage();
+}
+
+function resetConversationMetrics() {
+  sessionTotalCost = 0;
+  lastInputTokens = 0;
+  lastUsage = null;
+  currentContextUsage = null;
+  contextWindowSize = 0;
+  contextWindowSource = 'unknown';
+  updateCostDisplay();
   updateTokenUsage();
 }
 
@@ -1554,6 +1571,9 @@ async function loadModelInfo(options = {}) {
     if (stateData.success && stateData.data?.planMode) {
       applyPlanModeState(stateData.data.planMode);
     }
+    if (stateData.success && stateData.data?.contextUsage) {
+      applyContextUsage(stateData.data.contextUsage);
+    }
 
     const model = getCurrentModel();
     applyContextWindow(model);
@@ -1588,6 +1608,7 @@ function handleModelSelect(event) {
   if (next) Object.assign(next, model);
   else availableModels.push(model);
   applyContextWindow(next || model);
+  if (event.contextUsage) applyContextUsage(event.contextUsage);
   updateModelLabel();
   updateThinkingBtn();
   if (previousKey !== getModelKey(model) && modelDropdownMenu && !modelDropdownMenu.classList.contains('hidden')) {
@@ -2436,10 +2457,7 @@ async function newSession() {
     olderHistoryRequest?.abort('session-changed');
     olderHistoryRequest = null;
     historyPreviewSessionFile = null;
-    sessionTotalCost = 0;
-    lastInputTokens = 0;
-    currentContextUsage = null;
-    lastUsage = null;
+    resetConversationMetrics();
     state.reset();
     messageRenderer.clear();
     toolCardRenderer.clear();
@@ -2464,10 +2482,7 @@ async function newSession() {
 async function handleSessionSelect(session, project) {
   if (!session?.filePath) return;
   sidebar.setActive(session.filePath);
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
-  updateCostDisplay();
-  updateTokenUsage();
+  resetConversationMetrics();
   await switchSession(session.filePath, session, project);
 
   // Close sidebar on mobile after selecting
@@ -2667,7 +2682,17 @@ function handleMirrorSync(data) {
   isMirrorMode = true;
   if (data.planMode) applyPlanModeState(data.planMode);
 
-  // Track the active session
+  // Track the active session. A snapshot for a different session must never
+  // inherit usage, streaming state, or resume hints from the previous one.
+  const previousActiveSessionFile = mirrorActiveSessionFile;
+  const sessionChanged = previousActiveSessionFile !== (data.sessionFile || null);
+  if (sessionChanged) {
+    resetConversationMetrics();
+    currentStreamingElement = null;
+    currentStreamingThinking = '';
+    currentStreamingText = '';
+    resetStreamingDeltas();
+  }
   mirrorActiveSessionFile = data.sessionFile || null;
   historyPreviewSessionFile = null;
   viewingActiveSession = true;
@@ -2694,6 +2719,7 @@ function handleMirrorSync(data) {
   }
 
   if (data.contextUsage) applyContextUsage(data.contextUsage);
+  else if (sessionChanged) updateTokenUsage();
 
   if (data.tokenSaverEnabled !== undefined) {
     tokenSaverEnabled = !!data.tokenSaverEnabled;
@@ -2731,7 +2757,10 @@ function handleMirrorSync(data) {
   messageRenderer.clear();
   toolCardRenderer.clear();
   sessionTotalCost = 0;
-  lastInputTokens = 0;
+  // Keep Pi's authoritative usage applied above. History usage is only a
+  // fallback and must not overwrite it after a session switch.
+  lastUsage = null;
+  if (!currentContextUsage) lastInputTokens = 0;
 
   const livePage = sessionPageLocation(data.sessionFile);
   if (livePage) {
@@ -2761,7 +2790,10 @@ function handleMirrorSync(data) {
 wsClient.addEventListener('mirrorHelloOk', (e) => {
   const data = e.detail || {};
   isMirrorMode = true;
-  if (data.sessionFile) mirrorActiveSessionFile = data.sessionFile;
+  const helloSessionFile = data.sessionFile || null;
+  const sessionChanged = mirrorActiveSessionFile !== helloSessionFile;
+  if (sessionChanged) resetConversationMetrics();
+  mirrorActiveSessionFile = helloSessionFile;
   viewingActiveSession = true;
   if (data.model) {
     currentModelId = data.model.id || currentModelId;
@@ -2774,6 +2806,7 @@ wsClient.addEventListener('mirrorHelloOk', (e) => {
     updateThinkingBtn();
   }
   if (data.contextUsage) applyContextUsage(data.contextUsage);
+  else if (sessionChanged) updateTokenUsage();
   if (data.planMode) applyPlanModeState(data.planMode);
   else setPlanModeAction('get_state');
   lastSyncSessionFile = data.sessionFile || lastSyncSessionFile;
@@ -2919,7 +2952,7 @@ function renderSessionHistory(entries, options = {}) {
       const usage = entry.message?.usage;
       if (usage?.cost?.total) sessionTotalCost += usage.cost.total;
     }
-    if (!prepend) {
+    if (!currentContextUsage && !prepend) {
       const latestUsage = [...messages].reverse().find((entry) => entry.message?.usage?.input)?.message?.usage;
       if (latestUsage?.input) {
         lastInputTokens = latestUsage.input + (latestUsage.cacheRead || 0);
@@ -3155,15 +3188,22 @@ function updateCostDisplay() {
 
 function applyContextUsage(usage) {
   if (!usage || typeof usage !== 'object') return;
-  currentContextUsage = usage;
+  currentContextUsage = { ...usage };
   if (typeof usage.tokens === 'number') lastInputTokens = usage.tokens;
   if (Number(usage.contextWindow) > 0) contextWindowSize = Number(usage.contextWindow);
   updateTokenUsage();
 }
 
+function getDisplayedContextTokens() {
+  return typeof currentContextUsage?.tokens === 'number'
+    ? currentContextUsage.tokens
+    : lastInputTokens;
+}
+
 function updateTokenUsage() {
-  if (lastInputTokens > 0 && contextWindowSize > 0) {
-    const pct = Math.round((lastInputTokens / contextWindowSize) * 100);
+  const displayedTokens = getDisplayedContextTokens();
+  if (displayedTokens > 0 && contextWindowSize > 0) {
+    const pct = Math.round((displayedTokens / contextWindowSize) * 100);
     tokenUsageEl.textContent = pct === 0 ? '<1%' : `${pct}%`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
@@ -3174,7 +3214,7 @@ function updateTokenUsage() {
     }
     const sourceLabel = contextSourceCopy({ contextSource: contextWindowSource }).detail;
     tokenUsageEl.title = t('ctxTitle', {
-      used: `${(lastInputTokens / 1000).toFixed(1)}K`,
+      used: `${(displayedTokens / 1000).toFixed(1)}K`,
       total: formatContextSize(contextWindowSize),
       source: sourceLabel,
     });
@@ -3183,14 +3223,17 @@ function updateTokenUsage() {
     } else {
       hideCompactButton();
     }
-  } else if (lastInputTokens > 0) {
+  } else if (displayedTokens > 0) {
     // No context window info yet, just show raw tokens
-    tokenUsageEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k`;
+    tokenUsageEl.textContent = `${(displayedTokens / 1000).toFixed(1)}k`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
     hideCompactButton();
   } else {
+    tokenUsageEl.textContent = '—';
+    tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
+    tokenUsageEl.title = t('ctxUnknown');
     hideCompactButton();
   }
 }
@@ -3296,8 +3339,30 @@ function updateUI() {
 // WebSocket session switch handler
 // ═══════════════════════════════════════
 
-wsClient.addEventListener('sessionSwitch', () => {
-  console.log('[App] Session switched');
+  // Update the browser immediately when Pi replaces the session. The next
+  // session_start snapshot contains the authoritative history/model/usage.
+  wsClient.addEventListener('sessionSwitch', (event) => {
+  console.log('[App] Session switching', event.detail?.sessionFile || '');
+  renderGeneration++;
+  historyPageState = null;
+  historyBufferedEntries = [];
+  historyBufferedLoading = false;
+  historyPreviewSessionFile = null;
+  viewingActiveSession = true;
+  resetConversationMetrics();
+  currentStreamingElement = null;
+  currentStreamingThinking = '';
+  currentStreamingText = '';
+  resetStreamingDeltas();
+  if (toolUpdateFrame !== null) cancelAnimationFrame(toolUpdateFrame);
+  toolUpdateFrame = null;
+  pendingToolUpdates.clear();
+  state.reset();
+  messageRenderer.clear();
+  toolCardRenderer.clear();
+  messageRenderer.renderWelcome();
+  updateMirrorInputState();
+  updateMirrorLiveIndicator();
 });
 
 // ═══════════════════════════════════════

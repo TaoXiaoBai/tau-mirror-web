@@ -1559,7 +1559,11 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Plan Mode state is owned by the plan-mode extension. Ask it explicitly on
+  function broadcastSessionSnapshot(ctx: ExtensionContext) {
+    buildStateSnapshot(ctx).then((snapshot) => broadcast(snapshot)).catch((error) => {
+      console.warn(`[Mirror] Could not broadcast session snapshot: ${error?.message || error}`);
+    });
+  }
   // connection/session changes because its startup broadcast may precede Tau's
   // listener. Control requests resolve only after an authoritative reply.
   let planModeState: any = { available: false, mode: "unavailable", enabled: false, executing: false, awaitingAction: false, todos: [] };
@@ -1759,10 +1763,15 @@ export default function (pi: ExtensionAPI) {
           type: eventType,
           ...event,
           thinkingLevel: pi.getThinkingLevel(),
+          contextUsage: ctx.getContextUsage(),
+        } });
+      } else if (eventType === "thinking_level_select") {
+        broadcast({ type: "event", event: {
+          type: eventType,
+          ...event,
+          contextUsage: ctx.getContextUsage(),
         } });
       } else {
-        broadcast({ type: "event", event: { type: eventType, ...event } });
-      }
     });
   }
 
@@ -1811,6 +1820,13 @@ export default function (pi: ExtensionAPI) {
     userMessages = [];
     // Update instance registry with new session file
     updateInstanceSession(ctx.sessionManager.getSessionFile() || "");
+    // Existing browser sockets can survive an in-process session replacement.
+    // Push a full authoritative snapshot so every tab changes session exactly
+    // once even when the connection itself never closes.
+    queueMicrotask(() => {
+      if (!runtimeActive || generation !== runtimeGeneration || latestCtx !== ctx) return;
+      broadcastSessionSnapshot(ctx);
+    });
     // Extensions receive session_start in load order. Defer one tick so the
     // Plan extension has restored this session before Tau requests its state.
     setTimeout(() => {
@@ -2211,8 +2227,10 @@ export default function (pi: ExtensionAPI) {
             break;
           }
 
-          // Acknowledge before replacement shuts down this extension instance.
-          sendTo(ws, success("resume_session", { switching: true }));
+          // Tell every connected tab which session will become authoritative.
+          // The old server may close immediately after the command is queued.
+          sendTo(ws, { type: "session_switch", sessionFile: sessionPath, switching: true });
+          sendTo(ws, success("resume_session", { switching: true, sessionFile: sessionPath }));
           const encodedPath = Buffer.from(sessionPath, "utf8").toString("base64url");
           pi.sendUserMessage(`/tau-resume ${encodedPath}`, { expandPromptTemplates: true });
           break;
