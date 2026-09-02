@@ -1772,6 +1772,8 @@ export default function (pi: ExtensionAPI) {
           contextUsage: ctx.getContextUsage(),
         } });
       } else {
+        broadcast({ type: "event", event: { type: eventType, ...event } });
+      }
     });
   }
 
