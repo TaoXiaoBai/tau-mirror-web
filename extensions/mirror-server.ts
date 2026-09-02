@@ -1590,6 +1590,40 @@ export default function (pi: ExtensionAPI) {
 
   let tokenSaverEnabled = false;
   let tokenSaverPreviousThinking = "medium";
+  type MirrorWorkPhase = "idle" | "starting" | "thinking" | "writing" | "tool";
+  let mirrorWorkState: {
+    active: boolean;
+    phase: MirrorWorkPhase;
+    startedAt: number;
+    updatedAt: number;
+    toolName: string;
+  } = { active: false, phase: "idle", startedAt: 0, updatedAt: Date.now(), toolName: "" };
+
+  function setMirrorWorkState(active: boolean, phase: MirrorWorkPhase, toolName = "", notify = true) {
+    const now = Date.now();
+    const nextPhase: MirrorWorkPhase = active ? phase : "idle";
+    const nextToolName = active && nextPhase === "tool" ? String(toolName || "") : "";
+    const changed = mirrorWorkState.active !== active || mirrorWorkState.phase !== nextPhase || mirrorWorkState.toolName !== nextToolName;
+    mirrorWorkState = {
+      active,
+      phase: nextPhase,
+      startedAt: active ? (mirrorWorkState.active && mirrorWorkState.startedAt ? mirrorWorkState.startedAt : now) : 0,
+      updatedAt: now,
+      toolName: nextToolName,
+    };
+    if (notify && changed) broadcast({ type: "work_state", data: mirrorWorkState });
+    return mirrorWorkState;
+  }
+
+  function getAuthoritativeWorkState(ctx?: ExtensionContext | null) {
+    if (!ctx || ctx.isIdle()) {
+      if (mirrorWorkState.active) return setMirrorWorkState(false, "idle", "", false);
+      return mirrorWorkState;
+    }
+    if (!mirrorWorkState.active) return setMirrorWorkState(true, "starting", "", false);
+    return mirrorWorkState;
+  }
+
   // HTTP RPC requests are handled concurrently. Serialize model changes so
   // two quick clicks cannot finish out of order and leave Pi on the older one.
   let modelChangeQueue: Promise<void> = Promise.resolve();
@@ -1836,6 +1870,23 @@ export default function (pi: ExtensionAPI) {
     pi.on(eventType as any, async (event: any, ctx: ExtensionContext) => {
       latestCtx = ctx;
 
+      // Keep a compact backend-authoritative work phase. Browser tabs can miss
+      // individual lifecycle frames while sleeping, so snapshots and pongs also
+      // carry this state for reconciliation.
+      if (eventType === "agent_start" || eventType === "turn_start") {
+        setMirrorWorkState(true, "starting");
+      } else if (eventType === "message_start" && event?.message?.role === "assistant") {
+        setMirrorWorkState(true, "starting");
+      } else if (eventType === "message_update") {
+        const updateType = event?.assistantMessageEvent?.type;
+        if (updateType === "thinking_delta") setMirrorWorkState(true, "thinking");
+        else if (updateType === "text_delta") setMirrorWorkState(true, "writing");
+      } else if (eventType === "tool_execution_start") {
+        setMirrorWorkState(true, "tool", event?.toolName);
+      } else if (eventType === "tool_execution_end") {
+        setMirrorWorkState(true, "starting");
+      }
+
       // Forward only the event payload needed by the browser. Pi's
       // message_update also carries the complete accumulated assistant message;
       // broadcasting that on every delta creates quadratic JSON/network work.
@@ -1866,6 +1917,9 @@ export default function (pi: ExtensionAPI) {
           ...event,
           contextUsage: ctx.getContextUsage(),
         } });
+        // Send idle after agent_end so clients finalize the last message before
+        // queued input is allowed to flush.
+        setMirrorWorkState(false, "idle");
       } else {
         broadcast({ type: "event", event: { type: eventType, ...event } });
       }
@@ -1912,6 +1966,7 @@ export default function (pi: ExtensionAPI) {
     runtimeActive = true;
     const generation = ++runtimeGeneration;
     latestCtx = ctx;
+    setMirrorWorkState(!ctx.isIdle(), ctx.isIdle() ? "idle" : "starting", "", false);
     turnCount = 0;
     titleSet = false;
     userMessages = [];
@@ -2089,6 +2144,7 @@ export default function (pi: ExtensionAPI) {
       sessionName,
       sessionFile,
       isStreaming: !ctx.isIdle(),
+      workState: getAuthoritativeWorkState(ctx),
       contextUsage,
       planMode: planModeState,
       entryCount: entries.length,
@@ -2117,7 +2173,12 @@ export default function (pi: ExtensionAPI) {
     try {
       switch (command.type) {
         case "ping": {
-          sendTo(ws, { type: "pong", t: command.t || Date.now() });
+          sendTo(ws, {
+            type: "pong",
+            t: command.t || Date.now(),
+            isStreaming: !!ctx && !ctx.isIdle(),
+            workState: getAuthoritativeWorkState(ctx),
+          });
           break;
         }
 
@@ -2148,6 +2209,7 @@ export default function (pi: ExtensionAPI) {
               thinkingLevel: pi.getThinkingLevel(),
               tokenSaverEnabled,
               isStreaming: !ctx.isIdle(),
+              workState: getAuthoritativeWorkState(ctx),
               contextUsage: ctx.getContextUsage(),
               planMode: planModeState,
               entryCount,
@@ -2272,6 +2334,7 @@ export default function (pi: ExtensionAPI) {
             thinkingLevel: pi.getThinkingLevel(),
             tokenSaverEnabled,
             isStreaming: !ctx.isIdle(),
+            workState: getAuthoritativeWorkState(ctx),
             contextUsage: ctx.getContextUsage(),
             sessionFile: ctx.sessionManager.getSessionFile(),
             sessionName: pi.getSessionName(),
@@ -3833,8 +3896,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         (ws as any).isAlive = true;
       });
 
-      // Send initial state
-      sendTo(ws, { type: "state", isStreaming: false, mode: "mirror" });
+      // Send an immediate authoritative busy/idle hint while the fuller
+      // mirror snapshot is being prepared.
+      sendTo(ws, {
+        type: "state",
+        isStreaming: !!latestCtx && !latestCtx.isIdle(),
+        workState: getAuthoritativeWorkState(latestCtx),
+        mode: "mirror",
+      });
 
       // Give a returning tab a moment to send mirror_hello. If the session
       // tail is unchanged we skip shipping the full history again.

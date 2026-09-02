@@ -1648,9 +1648,21 @@ body {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
-#lang-select {
+#lang-select,
+#appearance-mode-select {
   width: auto;
   min-width: 132px;
+}
+
+#appearance-mode-select {
+  max-width: 210px;
+}
+
+.settings-inline-hint {
+  margin: -1px 0 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .settings-hint,

@@ -100,7 +100,9 @@ It is intentionally conservative: enabling it turns thinking off and remembers t
 - Delete only stopped historical `.jsonl` sessions from the allowed Pi sessions directory.
 - Keep the full history available through paging instead of silently truncating it.
 
-### Language
+### Appearance and language
+
+The six color themes remain selectable. **Settings → Appearance → Color mode** can keep the selected theme, follow the operating system, stay light/dark, or switch by local time. Time mode uses a dark theme from 19:00 to 07:00 and restores the preferred light theme during the day.
 
 On first visit, the UI follows the browser / system language. Chinese locales use Simplified Chinese; other locales use English. Change the preference later in **Settings → Language**.
 

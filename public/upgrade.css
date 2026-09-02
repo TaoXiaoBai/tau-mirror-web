@@ -1607,6 +1607,19 @@ textarea {
   }
 }
 
+@media (max-width: 520px) {
+  .settings-row-stacked-mobile {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  #appearance-mode-select {
+    width: 100%;
+    max-width: none;
+  }
+}
+
 @media (max-width: 768px) {
   :root {
     --tau-readable-width: 100%;

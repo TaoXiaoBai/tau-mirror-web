@@ -210,6 +210,9 @@ export class WebSocketClient extends EventTarget {
       case 'state':
         this.dispatchEvent(new CustomEvent('stateUpdate', { detail: message }));
         break;
+      case 'work_state':
+        this.dispatchEvent(new CustomEvent('workState', { detail: message.data || message }));
+        break;
       case 'error':
         this.dispatchEvent(new CustomEvent('serverError', { detail: message }));
         break;

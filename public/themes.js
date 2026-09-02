@@ -1,5 +1,6 @@
 /**
- * Theme system — four themes: two light, two dark
+ * Theme system — three light and three dark palettes, with an independent
+ * appearance mode controlling when the preferred light/dark palette is used.
  */
 
 export const themes = {
@@ -41,31 +42,103 @@ export const themes = {
   },
 };
 
-export function applyTheme(themeId) {
+const THEME_KEY = 'tau-theme';
+const LIGHT_THEME_KEY = 'tau-theme-light';
+const DARK_THEME_KEY = 'tau-theme-dark';
+const APPEARANCE_KEY = 'tau-appearance-mode';
+const VALID_MODES = new Set(['manual', 'system', 'time', 'light', 'dark']);
+const DEFAULT_LIGHT = 'terracotta';
+const DEFAULT_DARK = 'night';
+const TIME_DARK_START = 19;
+const TIME_DARK_END = 7;
+
+function normalizeTheme(themeId) {
+  if (themeId === 'dark') return DEFAULT_DARK;
+  if (themeId === 'light') return DEFAULT_LIGHT;
+  return themes[themeId] ? themeId : '';
+}
+
+function storedPalette(kind) {
+  const key = kind === 'dark' ? DARK_THEME_KEY : LIGHT_THEME_KEY;
+  const fallback = kind === 'dark' ? DEFAULT_DARK : DEFAULT_LIGHT;
+  const saved = normalizeTheme(localStorage.getItem(key));
+  return saved && themes[saved].dark === (kind === 'dark') ? saved : fallback;
+}
+
+function rememberPalette(themeId) {
+  if (!themes[themeId]) return;
+  localStorage.setItem(themes[themeId].dark ? DARK_THEME_KEY : LIGHT_THEME_KEY, themeId);
+}
+
+function systemWantsDark() {
+  return !!window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+}
+
+function localTimeWantsDark(date = new Date()) {
+  const hour = date.getHours();
+  return hour >= TIME_DARK_START || hour < TIME_DARK_END;
+}
+
+export function getAppearanceMode() {
+  const saved = localStorage.getItem(APPEARANCE_KEY);
+  if (VALID_MODES.has(saved)) return saved;
+  // Existing Tau users chose a concrete palette. Preserve that behavior until
+  // they explicitly select an automatic mode; new users follow the OS.
+  return localStorage.getItem(THEME_KEY) ? 'manual' : 'system';
+}
+
+export function resolveTheme(mode = getAppearanceMode(), date = new Date()) {
+  const saved = normalizeTheme(localStorage.getItem(THEME_KEY));
+  if (mode === 'manual') return saved || (systemWantsDark() ? DEFAULT_DARK : DEFAULT_LIGHT);
+  if (mode === 'dark') return storedPalette('dark');
+  if (mode === 'light') return storedPalette('light');
+  if (mode === 'time') return storedPalette(localTimeWantsDark(date) ? 'dark' : 'light');
+  return storedPalette(systemWantsDark() ? 'dark' : 'light');
+}
+
+export function applyTheme(themeId, options = {}) {
   const root = document.documentElement;
-  // Validate
-  if (!themes[themeId]) themeId = 'night';
-  root.setAttribute('data-theme', themeId);
-  localStorage.setItem('tau-theme', themeId);
+  const normalized = normalizeTheme(themeId) || DEFAULT_DARK;
+  root.setAttribute('data-theme', normalized);
+  if (options.remember !== false) {
+    localStorage.setItem(THEME_KEY, normalized);
+    rememberPalette(normalized);
+  }
+  return normalized;
+}
+
+export function applyAppearanceMode(mode = getAppearanceMode()) {
+  const normalizedMode = VALID_MODES.has(mode) ? mode : 'system';
+  localStorage.setItem(APPEARANCE_KEY, normalizedMode);
+  const resolved = resolveTheme(normalizedMode);
+  applyTheme(resolved, { remember: false });
+  return resolved;
+}
+
+export function setAppearanceMode(mode) {
+  return applyAppearanceMode(mode);
+}
+
+export function selectTheme(themeId) {
+  const normalized = normalizeTheme(themeId) || DEFAULT_DARK;
+  applyTheme(normalized);
+  // Choosing a swatch means “keep this exact palette” until the user selects
+  // another appearance mode.
+  localStorage.setItem(APPEARANCE_KEY, 'manual');
+  return normalized;
 }
 
 export function getCurrentTheme() {
-  const saved = localStorage.getItem('tau-theme');
-  // Migrate old values
-  if (saved === 'dark') return 'night';
-  if (saved === 'light') return 'terracotta';
-  if (saved && themes[saved]) return saved;
-  // Auto-detect from OS
-  if (window.matchMedia?.('(prefers-color-scheme: light)').matches) return 'terracotta';
-  return 'night';
+  return normalizeTheme(document.documentElement.getAttribute('data-theme')) || resolveTheme();
 }
 
-// Listen for OS theme changes if no explicit preference saved
-if (!localStorage.getItem('tau-theme')) {
-  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
-    if (!localStorage.getItem('tau-theme')) {
-      const root = document.documentElement;
-      root.setAttribute('data-theme', e.matches ? 'terracotta' : 'night');
-    }
-  });
+export function refreshAutomaticTheme() {
+  const mode = getAppearanceMode();
+  if (mode === 'manual') return getCurrentTheme();
+  return applyAppearanceMode(mode);
 }
+
+const systemScheme = window.matchMedia?.('(prefers-color-scheme: dark)');
+systemScheme?.addEventListener?.('change', () => {
+  if (getAppearanceMode() === 'system') applyAppearanceMode('system');
+});

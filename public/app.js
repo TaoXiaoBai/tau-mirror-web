@@ -8,7 +8,14 @@ import { MessageRenderer } from './message-renderer.js';
 import { ToolCardRenderer } from './tool-card.js';
 import { DialogHandler } from './dialogs.js';
 import { SessionSidebar } from './session-sidebar.js';
-import { themes, applyTheme, getCurrentTheme } from './themes.js';
+import {
+  themes,
+  getCurrentTheme,
+  getAppearanceMode,
+  setAppearanceMode,
+  selectTheme,
+  refreshAutomaticTheme,
+} from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import { t, applyDomTranslations, getLocalePreference, setLocalePreference, onLocaleChange, thinkingLevels } from './i18n.js';
@@ -85,11 +92,15 @@ if (langSelect) {
 }
 onLocaleChange(() => {
   applyDomTranslations();
+  originalTitle = t('title');
   refreshLangSelectLabels();
+  refreshAppearanceControls();
   if (langSelect) langSelect.value = getLocalePreference();
   updateModelLabel();
   updateThinkingBtn();
   updatePlanModeBtn();
+  refreshStatusPresentation();
+  updateTabTitle();
 });
 const historyResumeBar = document.getElementById('history-resume-bar');
 const historyResumeBtn = document.getElementById('history-resume-btn');
@@ -102,8 +113,8 @@ let sessionTotalCost = 0;
 let lastInputTokens = 0;
 let contextWindowSize = 0;  // effective value, provider metadata takes priority
 let contextWindowSource = 'pi-registry';
-let originalTitle = document.title;
-let hasFocus = true;
+let originalTitle = t('title');
+let hasFocus = document.visibilityState === 'visible' && document.hasFocus();
 let unreadCount = 0;
 let isScrolledUp = false;
 let hasNewWhileScrolled = false;
@@ -258,18 +269,30 @@ if (localStorage.getItem('tau-file-sidebar') === 'open') {
 // Focus tracking for tab title notifications
 // ═══════════════════════════════════════
 
+function pageIsActive() {
+  return hasFocus && document.visibilityState === 'visible';
+}
+
+function updateTabTitle() {
+  const working = state.isStreaming || workPhase !== 'idle';
+  if (!pageIsActive() && working) {
+    document.title = `● ${workStatusCopy(workPhase) || t('piWorking')} · ${originalTitle}`;
+  } else if (!pageIsActive() && unreadCount > 0) {
+    document.title = `(${unreadCount}) ● ${originalTitle}`;
+  } else {
+    document.title = originalTitle;
+  }
+}
+
 window.addEventListener('focus', () => {
   hasFocus = true;
   unreadCount = 0;
-  document.title = originalTitle;
+  updateTabTitle();
 });
-
-
-
-
 
 window.addEventListener('blur', () => {
   hasFocus = false;
+  updateTabTitle();
 });
 
 // Sleep / lock / tab-hide all leave the socket looking OPEN. Probe it instead
@@ -310,6 +333,11 @@ function scheduleResumeCheck(reason, delay = 80) {
 }
 
 document.addEventListener('visibilitychange', () => {
+  hasFocus = document.visibilityState === 'visible' && document.hasFocus();
+  if (hasFocus) unreadCount = 0;
+  refreshAutomaticTheme();
+  refreshThemeGridSelection();
+  updateTabTitle();
   if (document.visibilityState === 'visible') scheduleResumeCheck('visible');
 });
 window.addEventListener('pageshow', (event) => {
@@ -530,6 +558,26 @@ wsClient.addEventListener('disconnected', () => {
   updateConnectionStatus('disconnected');
 });
 
+wsClient.addEventListener('stateUpdate', (event) => {
+  applyAuthoritativeWorkState(event.detail);
+});
+
+wsClient.addEventListener('workState', (event) => {
+  applyAuthoritativeWorkState({
+    isStreaming: event.detail?.active,
+    workState: event.detail,
+  });
+});
+
+// Heartbeat replies also reconcile status. This repairs a background tab that
+// was throttled long enough to miss a lifecycle frame without redrawing chat.
+wsClient.addEventListener('pong', (event) => {
+  const data = event.detail || {};
+  if (typeof data.isStreaming === 'boolean' || data.workState) {
+    applyAuthoritativeWorkState(data);
+  }
+});
+
 wsClient.addEventListener('reconnectFailed', () => {
   updateConnectionStatus('disconnected');
   showToast('暂时无法连接 Pi，请刷新页面重试', 'error', 5000);
@@ -671,11 +719,10 @@ function handleAgentEnd(event) {
   currentStreamingText = '';
   updateUI();
 
-  // Notify via tab title if unfocused
-  if (!hasFocus) {
+  // Notify via tab title if this page is not the active visible tab.
+  if (!pageIsActive()) {
     unreadCount++;
-    document.title = `(${unreadCount}) ● ${originalTitle}`;
-
+    updateTabTitle();
   }
 }
 
@@ -1254,7 +1301,8 @@ function flushQueue() {
 abortBtn.addEventListener('click', () => {
   wsClient.send({ type: 'abort' });
   showToast(t('stoppedGen'), 'info', 1800);
-  setWorkPhase('idle');
+  // Keep showing busy until Pi confirms agent_end/work_state. Treating the
+  // click itself as idle caused a false idle window while cancellation settled.
 });
 
 // ═══════════════════════════════════════
@@ -2376,7 +2424,6 @@ document.addEventListener('keydown', (e) => {
     if (state.isStreaming) {
       wsClient.send({ type: 'abort' });
       showToast(t('stoppedGen'), 'info', 1800);
-      setWorkPhase('idle');
     } else if (!sidebarEl.classList.contains('collapsed') && window.innerWidth <= 768) {
       toggleSidebar();
     }
@@ -2721,9 +2768,7 @@ function rememberSyncHint(data, entries = data.entries || []) {
 function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   isMirrorMode = true;
-  state.setStreaming(data.isStreaming === true);
-  if (data.isStreaming) setWorkPhase('starting');
-  else setWorkPhase('idle');
+  applyAuthoritativeWorkState(data, false);
   if (data.planMode) applyPlanModeState(data.planMode);
 
   // Track the active session. A snapshot for a different session must never
@@ -2838,9 +2883,7 @@ function handleMirrorSync(data) {
 wsClient.addEventListener('mirrorHelloOk', (e) => {
   const data = e.detail || {};
   isMirrorMode = true;
-  state.setStreaming(data.isStreaming === true);
-  if (data.isStreaming) setWorkPhase('starting');
-  else setWorkPhase('idle');
+  applyAuthoritativeWorkState(data, false);
   const helloSessionFile = data.sessionFile || null;
   const sessionChanged = mirrorActiveSessionFile !== helloSessionFile;
   if (sessionChanged) resetConversationMetrics();
@@ -3190,11 +3233,11 @@ function workStatusCopy(phase) {
   return '';
 }
 
-function setWorkPhase(phase) {
-  if (phase === workPhase && phase !== 'tool') return;
-  workPhase = phase;
+function setWorkPhase(phase, options = {}) {
+  const valid = new Set(['idle', 'starting', 'thinking', 'writing', 'tool']);
+  workPhase = valid.has(phase) ? phase : (state.isStreaming ? 'starting' : 'idle');
   const inputArea = document.querySelector('.input-area');
-  if (phase === 'idle') {
+  if (workPhase === 'idle') {
     workStartedAt = 0;
     activeToolName = '';
     if (workElapsedTimer) {
@@ -3205,17 +3248,15 @@ function setWorkPhase(phase) {
     inputArea?.classList.remove('working');
     statusElapsed?.classList.add('hidden');
     if (statusElapsed) statusElapsed.textContent = '';
-    if (hasFocus) document.title = originalTitle;
+    refreshStatusPresentation();
     return;
   }
-  if (!workStartedAt) workStartedAt = Date.now();
+  const authoritativeStart = Number(options.startedAt);
+  if (authoritativeStart > 0) workStartedAt = authoritativeStart;
+  else if (!workStartedAt) workStartedAt = Date.now();
   statusEl?.classList.remove('thinking', 'writing', 'tool', 'starting');
-  statusEl?.classList.add('working', phase);
+  statusEl?.classList.add('working', workPhase);
   inputArea?.classList.add('working');
-  if (statusText) {
-    statusText.textContent = workStatusCopy(phase) || t('piWorking');
-    statusText.title = t('escStop');
-  }
   if (statusElapsed) {
     statusElapsed.classList.remove('hidden');
     statusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
@@ -3226,7 +3267,42 @@ function setWorkPhase(phase) {
       statusElapsed.textContent = formatElapsed(Date.now() - workStartedAt);
     }, 1000);
   }
-  if (!hasFocus) document.title = `● ${workStatusCopy(phase)} · ${originalTitle}`;
+  refreshStatusPresentation();
+}
+
+function applyAuthoritativeWorkState(data = {}, shouldUpdateUI = true) {
+  const serverState = data.workState || {};
+  const busy = typeof data.isStreaming === 'boolean'
+    ? data.isStreaming
+    : serverState.active === true;
+  state.setStreaming(busy);
+  if (busy && serverState.phase === 'tool') activeToolName = serverState.toolName || '';
+  else if (busy && serverState.phase !== 'tool') activeToolName = '';
+  setWorkPhase(busy ? (serverState.phase || 'starting') : 'idle', {
+    startedAt: serverState.startedAt,
+  });
+  if (shouldUpdateUI) updateUI();
+}
+
+function refreshStatusPresentation() {
+  const working = state.isStreaming || workPhase !== 'idle';
+  if (working) {
+    statusIndicator.classList.add('streaming');
+    statusIndicator.classList.remove('connected', 'disconnected');
+    statusText.textContent = workStatusCopy(workPhase) || t('piWorking');
+    statusText.title = t('escStop');
+  } else {
+    statusIndicator.classList.remove('streaming');
+    statusIndicator.classList.toggle('connected', connectionState === 'connected');
+    statusIndicator.classList.toggle('disconnected', connectionState === 'disconnected');
+    statusText.textContent = connectionState === 'connected'
+      ? (tailscaleUrl ? `${t('connected')} · TS` : t('connected'))
+      : t('disconnected');
+    statusText.title = connectionState === 'connected'
+      ? (tailscaleUrl || t('connectedPi'))
+      : t('waitingReconnect');
+  }
+  updateTabTitle();
 }
 
 function updateCostDisplay() {
@@ -3333,46 +3409,28 @@ let tailscaleUrl = '';
 function updateConnectionStatus(status) {
   const previous = connectionState;
   connectionState = status;
-  statusIndicator.className = `status-indicator ${status}`;
+  refreshStatusPresentation();
 
   if (status === 'connected') {
-    if (workPhase === 'idle') {
-      statusText.textContent = tailscaleUrl ? `${t('connected')} · TS` : t('connected');
-      statusText.title = tailscaleUrl || t('connectedPi');
-    }
     if (previous === 'disconnected') showToast(t('reconnected'), 'success', 2200);
     if (!tailscaleUrl) {
-      // Delay health check to avoid competing with mirror_sync during reconnect
+      // Delay health check to avoid competing with mirror_sync during reconnect.
+      // Never overwrite a work phase that started while this request was open.
       setTimeout(() => {
         fetch('/api/health').then(r => r.json()).then(data => {
-          if (data.tailscaleUrl) {
-            tailscaleUrl = data.tailscaleUrl;
-            statusText.textContent = `${t('connected')} · TS`;
-            statusText.title = tailscaleUrl;
-          }
+          if (data.tailscaleUrl) tailscaleUrl = data.tailscaleUrl;
+          refreshStatusPresentation();
         }).catch(() => {});
       }, 3000);
     }
-  } else if (status === 'disconnected') {
-    statusText.textContent = t('disconnected');
-    statusText.title = t('waitingReconnect');
-    if (previous === 'connected') showToast(t('reconnecting'), 'warning', 3200);
+  } else if (status === 'disconnected' && previous === 'connected') {
+    showToast(t('reconnecting'), 'warning', 3200);
   }
 }
 
 function updateUI() {
   const isStreaming = state.isStreaming;
-
-  if (isStreaming) {
-    statusIndicator.classList.add('streaming');
-    statusIndicator.classList.remove('connected');
-    statusText.textContent = workStatusCopy(workPhase) || t('piWorking');
-    statusText.title = t('escStop');
-  } else {
-    statusIndicator.classList.remove('streaming');
-    statusIndicator.classList.toggle('connected', connectionState === 'connected');
-    statusText.textContent = connectionState === 'connected' ? (tailscaleUrl ? `${t('connected')} · TS` : t('connected')) : t('disconnected');
-  }
+  refreshStatusPresentation();
 
   messageInput.disabled = false;
   sendBtn.disabled = false;
@@ -3428,7 +3486,9 @@ const settingsPanel = document.getElementById('settings-panel');
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsClose = document.getElementById('settings-close');
 const themeGrid = document.getElementById('theme-grid');
-
+const appearanceModeSelect = document.getElementById('appearance-mode-select');
+const appearanceModeHint = document.getElementById('appearance-mode-hint');
+let automaticThemeTimer = null;
 
 const toggleAutoCompact = document.getElementById('toggle-auto-compact');
 const btnThinkingLevel = document.getElementById('btn-thinking-level');
@@ -3446,28 +3506,97 @@ function updateTokenSaverBtn() {
 }
 updateTokenSaverBtn();
 
+function appearanceHintKey(mode) {
+  if (mode === 'time') return 'appearanceTimeHint';
+  if (mode === 'light') return 'appearanceLightHint';
+  if (mode === 'dark') return 'appearanceDarkHint';
+  if (mode === 'manual') return 'appearanceManualHint';
+  return 'appearanceSystemHint';
+}
+
+function refreshAppearanceControls() {
+  const mode = getAppearanceMode();
+  if (appearanceModeSelect) {
+    appearanceModeSelect.value = mode;
+    for (const option of appearanceModeSelect.options) {
+      const keys = {
+        system: 'appearanceSystem',
+        time: 'appearanceTime',
+        light: 'appearanceLight',
+        dark: 'appearanceDark',
+        manual: 'appearanceManual',
+      };
+      option.textContent = t(keys[option.value] || 'appearanceSystem');
+    }
+  }
+  if (appearanceModeHint) appearanceModeHint.textContent = t(appearanceHintKey(mode));
+}
+
+function refreshThemeGridSelection() {
+  const current = getCurrentTheme();
+  themeGrid?.querySelectorAll('.theme-swatch').forEach((swatch) => {
+    const selected = swatch.dataset.theme === current;
+    swatch.classList.toggle('active', selected);
+    swatch.setAttribute('aria-pressed', String(selected));
+  });
+}
+
+function scheduleAutomaticThemeRefresh() {
+  if (automaticThemeTimer) clearTimeout(automaticThemeTimer);
+  automaticThemeTimer = null;
+  if (getAppearanceMode() !== 'time') return;
+  const now = new Date();
+  const next = new Date(now);
+  if (now.getHours() < 7) {
+    next.setHours(7, 0, 1, 0);
+  } else if (now.getHours() < 19) {
+    next.setHours(19, 0, 1, 0);
+  } else {
+    next.setDate(next.getDate() + 1);
+    next.setHours(7, 0, 1, 0);
+  }
+  automaticThemeTimer = setTimeout(() => {
+    refreshAutomaticTheme();
+    refreshThemeGridSelection();
+    scheduleAutomaticThemeRefresh();
+  }, Math.max(1000, next.getTime() - now.getTime()));
+}
+
 function buildThemeGrid() {
   themeGrid.innerHTML = '';
   const current = getCurrentTheme();
 
   for (const [id, theme] of Object.entries(themes)) {
     const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.theme = id;
     btn.className = `theme-swatch${current === id ? ' active' : ''}`;
-    const dots = (theme.colors || []).map(c => 
+    btn.setAttribute('aria-pressed', String(current === id));
+    const dots = (theme.colors || []).map(c =>
       `<span class="swatch-dot" style="background:${c}"></span>`
     ).join('');
     btn.innerHTML = `<span class="swatch-colors">${dots}</span><span class="swatch-name">${theme.name}</span>`;
-    btn.title = `使用${theme.name}主题`;
+    btn.title = t('useTheme', { name: theme.name });
     btn.addEventListener('click', () => {
-      applyTheme(id);
-      themeGrid.querySelectorAll('.theme-swatch').forEach(s => s.classList.remove('active'));
-      btn.classList.add('active');
+      selectTheme(id);
+      refreshAppearanceControls();
+      refreshThemeGridSelection();
+      scheduleAutomaticThemeRefresh();
     });
     themeGrid.appendChild(btn);
   }
 }
 
+appearanceModeSelect?.addEventListener('change', () => {
+  setAppearanceMode(appearanceModeSelect.value);
+  refreshAppearanceControls();
+  refreshThemeGridSelection();
+  scheduleAutomaticThemeRefresh();
+});
+
 async function openSettings() {
+  refreshAutomaticTheme();
+  refreshAppearanceControls();
   buildThemeGrid();
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
@@ -3858,9 +3987,12 @@ async function deleteRelayFromEditor() {
   dropProviderLocally(form.id);
 }
 
-// Restore saved theme
-const savedTheme = getCurrentTheme();
-applyTheme(savedTheme);
+// Restore and schedule the selected appearance behavior. The inline head
+// script already chose the correct palette before first paint; this reconciles
+// storage and arranges the next local-time boundary.
+refreshAutomaticTheme();
+refreshAppearanceControls();
+scheduleAutomaticThemeRefresh();
 
 // ═══════════════════════════════════════
 // Context Window Visualiser

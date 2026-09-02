@@ -15,10 +15,17 @@
   <script>
     // Apply theme + language BEFORE CSS/UI paint
     (function(){
-      var t=localStorage.getItem('tau-theme');
-      if(t==='dark')t='night';if(t==='light')t='terracotta';
       var v=['night','dawn','midnight','clean','terracotta','sage'];
-      if(!t||v.indexOf(t)===-1)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)?'terracotta':'night';
+      var dark=['night','dawn','midnight'];
+      var light=['clean','terracotta','sage'];
+      var saved=localStorage.getItem('tau-theme');
+      if(saved==='dark')saved='night';if(saved==='light')saved='terracotta';
+      var mode=localStorage.getItem('tau-appearance-mode')||(saved?'manual':'system');
+      var d=localStorage.getItem('tau-theme-dark');
+      var l=localStorage.getItem('tau-theme-light');
+      if(dark.indexOf(d)===-1)d='night';if(light.indexOf(l)===-1)l='terracotta';
+      var wantsDark=mode==='dark'||(mode==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches)||(mode==='time'&&(new Date().getHours()>=19||new Date().getHours()<7));
+      var t=mode==='manual'&&v.indexOf(saved)!==-1?saved:(mode==='light'?l:(wantsDark?d:l));
       document.documentElement.setAttribute('data-theme',t);
       var pref=localStorage.getItem('tau-lang');
       var zh=false;
@@ -227,6 +234,17 @@
       <div class="settings-pane" id="settings-pane-general">
         <div class="settings-section">
           <div class="settings-section-title" data-i18n="appearance">Appearance</div>
+          <div class="settings-row settings-row-stacked-mobile">
+            <span class="settings-label" data-i18n="appearanceMode">Color mode</span>
+            <select id="appearance-mode-select" class="settings-input" aria-label="Color mode" data-i18n-aria="appearanceMode">
+              <option value="system">Follow system</option>
+              <option value="time">Automatic by local time</option>
+              <option value="light">Always light</option>
+              <option value="dark">Always dark</option>
+              <option value="manual">Selected theme</option>
+            </select>
+          </div>
+          <p class="settings-inline-hint" id="appearance-mode-hint" data-i18n="appearanceSystemHint">Uses your operating system light/dark setting.</p>
           <div class="theme-grid" id="theme-grid"></div>
         </div>
         <div class="settings-section">
