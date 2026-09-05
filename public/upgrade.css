@@ -12,8 +12,15 @@
   --tau-chat: #232323;
   --tau-divider: rgba(255, 255, 255, 0.075);
   --tau-soft-shadow: 0 18px 54px rgba(0, 0, 0, 0.28);
-  --tau-readable-width: 900px;
-  --sidebar-width: 268px;
+  /* Reading, composing, and utility panels have different ergonomic limits.
+     They grow fluidly on desktop instead of sharing the former fixed 900px. */
+  --tau-reading-width: clamp(900px, 64vw, 1180px);
+  --tau-composer-width: clamp(940px, 76vw, 1600px);
+  --tau-panel-width: clamp(940px, 72vw, 1440px);
+  --tau-readable-width: var(--tau-reading-width);
+  --tau-page-gutter: clamp(16px, 3vw, 58px);
+  --tau-settings-width: clamp(420px, 28vw, 520px);
+  --sidebar-width: clamp(248px, 18vw, 304px);
 }
 
 :root[data-theme="dawn"] {
@@ -960,18 +967,24 @@ textarea {
 
 /* ---------- readable conversation ---------- */
 .messages {
-  padding: 68px clamp(18px, 4vw, 58px) 122px;
+  padding: 68px var(--tau-page-gutter) 122px;
   gap: 12px;
   scroll-padding-bottom: 120px;
 }
 
 .message,
-.tool-card,
 .system-message,
 .error-message,
 .compaction-message {
-  width: min(100%, var(--tau-readable-width));
-  max-width: var(--tau-readable-width);
+  width: min(100%, var(--tau-reading-width));
+  max-width: var(--tau-reading-width);
+  margin-inline: auto;
+}
+
+/* Tool output and diffs benefit from more horizontal room than prose. */
+.tool-card {
+  width: min(100%, var(--tau-panel-width));
+  max-width: var(--tau-panel-width);
   margin-inline: auto;
 }
 
@@ -1253,7 +1266,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(100%, var(--tau-readable-width));
+  width: min(100%, var(--tau-composer-width));
   margin: 0 auto 9px;
   padding: 12px 12px 12px 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--border));
@@ -1369,7 +1382,7 @@ textarea {
 
 /* ---------- input dock ---------- */
 .input-area {
-  padding: 10px max(18px, calc((100% - var(--tau-readable-width)) / 2)) 14px;
+  padding: 10px max(var(--tau-page-gutter), calc((100% - var(--tau-composer-width)) / 2)) 14px;
   background: linear-gradient(to top, var(--bg-solid) 70%, color-mix(in srgb, var(--bg-solid) 88%, transparent));
   border-top: 0;
   backdrop-filter: blur(14px);
@@ -1380,7 +1393,7 @@ textarea {
 .image-previews,
 .queued-messages,
 .mobile-model-bar {
-  width: min(100%, var(--tau-readable-width));
+  width: min(100%, var(--tau-composer-width));
   margin-inline: auto;
 }
 
@@ -1520,7 +1533,7 @@ textarea {
   bottom: 0;
   left: auto;
   transform: none;
-  width: min(420px, 100vw);
+  width: min(var(--tau-settings-width), 100vw);
   max-height: 100vh;
   border-radius: 0;
   border-left: 1px solid var(--tau-divider);
@@ -1537,13 +1550,13 @@ textarea {
 
 @media (min-width: 769px) {
   body.settings-open .app-layout {
-    padding-right: min(420px, 38vw);
+    padding-right: min(var(--tau-settings-width), 38vw);
     transition: padding-right 0.22s var(--ease);
   }
 
   body.settings-open .settings-panel,
   body.settings-open .settings-overlay {
-    width: min(420px, 38vw);
+    width: min(var(--tau-settings-width), 38vw);
   }
 
   .settings-overlay {
@@ -1590,7 +1603,37 @@ textarea {
   color: var(--accent-text);
 }
 
-/* ---------- mobile ---------- */
+/* ---------- large desktop ---------- */
+@media (min-width: 1600px) {
+  :root {
+    --tau-reading-width: clamp(1080px, 66vw, 1380px);
+    --tau-composer-width: clamp(1240px, 78vw, 2000px);
+    --tau-panel-width: clamp(1180px, 74vw, 1760px);
+    --tau-page-gutter: clamp(28px, 3vw, 72px);
+  }
+
+  #message-input {
+    min-height: 52px;
+    font-size: 16px;
+  }
+
+  #chat-form {
+    padding: 9px;
+  }
+}
+
+/* ---------- compact desktop / tablet ---------- */
+@media (min-width: 769px) and (max-width: 1199px) {
+  :root {
+    --tau-reading-width: min(100%, 920px);
+    --tau-composer-width: min(100%, 1040px);
+    --tau-panel-width: min(100%, 1040px);
+    --tau-page-gutter: clamp(14px, 2.4vw, 28px);
+    --sidebar-width: clamp(240px, 27vw, 286px);
+  }
+}
+
+/* ---------- mobile / narrow tablet ---------- */
 @media (max-width: 900px) {
   .header-cluster-metrics {
     padding-inline: 4px;
@@ -1639,7 +1682,11 @@ textarea {
 
 @media (max-width: 768px) {
   :root {
+    --tau-reading-width: 100%;
+    --tau-composer-width: 100%;
+    --tau-panel-width: 100%;
     --tau-readable-width: 100%;
+    --tau-page-gutter: 13px;
   }
 
   .header {
@@ -1908,7 +1955,7 @@ textarea {
   to { opacity: 1; transform: translateX(0); }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .header-right .context-usage-group {
     display: none;
   }
@@ -2641,7 +2688,7 @@ textarea {
   z-index: 25;
   display: flex;
   justify-content: center;
-  padding: 8px max(18px, calc((100% - var(--tau-readable-width)) / 2));
+  padding: 8px max(var(--tau-page-gutter), calc((100% - var(--tau-composer-width)) / 2));
   background: transparent;
   pointer-events: none;
   animation: none;
@@ -2652,8 +2699,8 @@ textarea {
 }
 
 #dialog-container .dialog {
-  width: min(100%, var(--tau-readable-width));
-  max-width: var(--tau-readable-width);
+  width: min(100%, var(--tau-composer-width));
+  max-width: var(--tau-composer-width);
   max-height: min(44dvh, 420px, calc(100dvh - var(--input-dock-height, 78px) - 64px));
   margin: 0;
   padding: 14px;
@@ -2768,5 +2815,197 @@ textarea {
   .toast-region {
     top: calc(48px + env(safe-area-inset-top));
     bottom: auto;
+  }
+}
+
+/* ---------- device-class adaptation ---------- */
+/* Tablets use a slide-over session panel so the conversation keeps its width.
+   This includes iPad portrait and compact laptop split-screen layouts. */
+@media (max-width: 1024px) {
+  :root {
+    --tau-reading-width: min(100%, 920px);
+    --tau-composer-width: min(100%, 980px);
+    --tau-panel-width: min(100%, 980px);
+    --tau-page-gutter: clamp(13px, 2.5vw, 26px);
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(86vw, 360px) !important;
+    min-width: 0;
+    margin-left: 0;
+    transform: translateX(0);
+    z-index: 200;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.24);
+    transition: transform 0.25s var(--ease);
+  }
+
+  .sidebar.collapsed {
+    margin-left: 0;
+    transform: translateX(-100%);
+    box-shadow: none;
+  }
+
+  .sidebar-overlay {
+    display: block !important;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s var(--ease);
+  }
+
+  .sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar-toggle {
+    display: flex !important;
+  }
+
+  .file-sidebar,
+  #file-sidebar-toggle {
+    display: none !important;
+  }
+
+  .header-right .session-cost,
+  .header-right .token-usage,
+  .header-right .token-usage-wrap {
+    display: none !important;
+  }
+}
+
+/* Phone portrait: prioritize touch targets and a single compact header row. */
+@media (max-width: 600px) and (orientation: portrait) {
+  .messages {
+    padding-inline: 10px;
+  }
+
+  .input-area {
+    padding-inline: 7px;
+  }
+
+  #chat-form {
+    padding: 6px;
+  }
+
+  .message.user .message-content {
+    max-width: 92%;
+  }
+}
+
+/* Mobile/tablet context details remain available in the expandable composer
+   row instead of disappearing with the crowded desktop metrics cluster. */
+@media (max-width: 1024px) {
+  .mobile-context-toggle {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 22px;
+    margin: -5px auto 2px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .mobile-context-toggle svg {
+    transition: transform 0.16s var(--ease);
+  }
+
+  .mobile-context-toggle.flipped svg {
+    transform: rotate(180deg);
+  }
+
+  .mobile-model-bar {
+    display: flex !important;
+    min-height: 28px;
+    padding: 0 6px 7px;
+  }
+
+  .mobile-model-bar.collapsed {
+    display: none !important;
+  }
+
+  .mobile-model-bar .context-usage-group {
+    display: flex;
+  }
+
+  .mobile-model-bar .session-cost,
+  .mobile-model-bar .token-usage {
+    min-height: 24px;
+    padding: 5px 9px;
+    font-size: 10px;
+  }
+
+  .mobile-model-bar .session-cost.visible,
+  .mobile-model-bar .token-usage.visible {
+    display: block;
+  }
+
+  .mobile-model-bar .context-viz {
+    position: fixed;
+    top: auto;
+    right: max(9px, env(safe-area-inset-right));
+    bottom: calc(var(--input-dock-height, 70px) + 8px);
+    left: auto;
+    width: min(340px, calc(100vw - 18px));
+    max-height: min(54dvh, 420px);
+    overflow-y: auto;
+  }
+}
+
+/* Short landscape phones/tablets need vertical space more than decoration. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .header {
+    min-height: 42px;
+    padding-block: 4px;
+  }
+
+  .messages {
+    padding-top: 44px;
+  }
+
+  .input-area {
+    max-height: 54dvh;
+    padding-top: 5px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+
+  #message-input {
+    min-height: 38px;
+    max-height: 96px;
+  }
+
+  #dialog-container .dialog {
+    max-height: min(50dvh, 250px, calc(100dvh - var(--input-dock-height, 62px) - 44px));
+  }
+}
+
+@media (pointer: coarse) {
+  .model-provider-nav-item,
+  .plan-menu-item,
+  .thinking-menu-item,
+  .dialog-option {
+    min-height: 44px;
+  }
+
+  .icon-btn,
+  .sidebar-toggle,
+  .settings-btn,
+  .settings-close,
+  .input-icon-btn {
+    min-width: 42px;
+    min-height: 42px;
+  }
+}
+
+@media (max-width: 430px) {
+  /* Settings must remain reachable on phones; the file button is already
+     removed in narrow layouts, leaving room for this touch target. */
+  .header-actions .settings-btn {
+    display: flex;
   }
 }

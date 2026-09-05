@@ -2533,7 +2533,7 @@ document.addEventListener('keydown', (e) => {
     if (state.isStreaming) {
       wsClient.send({ type: 'abort' });
       showToast(t('stoppedGen'), 'info', 1800);
-    } else if (!sidebarEl.classList.contains('collapsed') && window.innerWidth <= 768) {
+    } else if (!sidebarEl.classList.contains('collapsed') && isMobile()) {
       toggleSidebar();
     }
   }
@@ -2554,8 +2554,9 @@ function isInInput() {
 // Sidebar
 // ═══════════════════════════════════════
 
+const NARROW_LAYOUT_QUERY = '(max-width: 1024px)';
 function isMobile() {
-  return window.innerWidth <= 768;
+  return window.matchMedia?.(NARROW_LAYOUT_QUERY).matches ?? window.innerWidth <= 1024;
 }
 
 function updateSidebarToggleIcon() {
@@ -4321,28 +4322,49 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 // Initialize
 // ═══════════════════════════════════════
 
-// On mobile, move cost + token usage above input
-if (isMobile()) {
-  sidebarEl.classList.add('collapsed');
+// Responsive shell: session navigation becomes a slide-over panel on tablets
+// and phones. Context metrics move into an expandable composer row there.
+const mobileBar = document.getElementById('mobile-model-bar');
+const contextToggle = document.getElementById('mobile-context-toggle');
+const desktopContextGroup = document.querySelector('.context-usage-group');
+const desktopMetricsCluster = document.querySelector('.header-cluster-metrics');
+const statusMetric = document.getElementById('status');
+const sessionCostMetric = document.getElementById('session-cost');
+const tokenUsageMetric = document.getElementById('token-usage');
+let responsiveNarrow = null;
 
-  const mobileBar = document.getElementById('mobile-model-bar');
-  const sessionCost = document.getElementById('session-cost');
-  const tokenUsage = document.getElementById('token-usage');
-  if (mobileBar && sessionCost && tokenUsage) {
-    mobileBar.appendChild(sessionCost);
-    mobileBar.appendChild(tokenUsage);
+function applyResponsiveShell() {
+  const narrow = isMobile();
+  if (narrow === responsiveNarrow) return;
+  responsiveNarrow = narrow;
+  if (narrow) {
+    sidebarEl.classList.add('collapsed');
+    sidebarOverlay.classList.remove('visible');
+    if (mobileBar && sessionCostMetric && desktopContextGroup) {
+      mobileBar.append(sessionCostMetric, desktopContextGroup);
+      mobileBar.classList.add('collapsed');
+      contextToggle?.classList.remove('flipped');
+    }
+  } else {
+    sidebarEl.classList.remove('collapsed');
+    sidebarOverlay.classList.remove('visible');
+    if (desktopMetricsCluster && statusMetric) {
+      desktopMetricsCluster.insertBefore(sessionCostMetric, statusMetric);
+      desktopMetricsCluster.insertBefore(desktopContextGroup, statusMetric);
+    }
   }
-
-  // Start collapsed
-  mobileBar.classList.add('collapsed');
-
-  // Toggle via chevron
-  const contextToggle = document.getElementById('mobile-context-toggle');
-  contextToggle.addEventListener('click', () => {
-    mobileBar.classList.toggle('collapsed');
-    contextToggle.classList.toggle('flipped', !mobileBar.classList.contains('collapsed'));
-  });
+  scheduleObstructionLayoutUpdate();
 }
+
+contextToggle?.addEventListener('click', () => {
+  mobileBar?.classList.toggle('collapsed');
+  contextToggle.classList.toggle('flipped', !mobileBar?.classList.contains('collapsed'));
+  scheduleObstructionLayoutUpdate();
+});
+
+const narrowLayoutMedia = window.matchMedia?.(NARROW_LAYOUT_QUERY);
+narrowLayoutMedia?.addEventListener?.('change', applyResponsiveShell);
+applyResponsiveShell();
 
 // Launcher
 const launcherEl = document.getElementById('launcher');
