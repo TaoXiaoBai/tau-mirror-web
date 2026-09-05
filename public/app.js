@@ -28,13 +28,23 @@ const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById('messages'));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById('messages'));
 toolCardRenderer.setScrollCallback(() => messageRenderer.scrollToBottom());
-const dialogHandler = new DialogHandler(document.getElementById('dialog-container'), wsClient);
+const dialogContainerEl = document.getElementById('dialog-container');
+const dialogHandler = new DialogHandler(dialogContainerEl, wsClient, {
+  onLayoutChange: () => scheduleObstructionLayoutUpdate(),
+});
 
 // Session sidebar
 const sidebar = new SessionSidebar(
   document.getElementById('session-list'),
   handleSessionSelect,
-  { onSessionDeleted: handleSessionDeleted, onSessionRenamed: handleSessionRenamed }
+  {
+    onSessionDeleted: handleSessionDeleted,
+    onSessionRenamed: handleSessionRenamed,
+    confirmAction: async (title, message) => {
+      const result = await requestInlineDialog('confirm', { title, message });
+      return result.confirmed === true;
+    },
+  }
 );
 
 // UI elements
@@ -132,16 +142,70 @@ let isMirrorMode = false; // Set when mirror_sync received
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 let connectionState = 'connecting';
 
-function updateInputDockHeight() {
-  if (!mainContainer || !inputAreaEl) return;
-  const height = Math.ceil(inputAreaEl.getBoundingClientRect().height);
-  mainContainer.style.setProperty('--input-dock-height', `${Math.max(0, height)}px`);
+let obstructionLayoutFrame = null;
+let obstructionFollowPending = false;
+
+function messagesBottomDistance() {
+  if (!messagesContainer) return 0;
+  return Math.max(0, messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight);
 }
 
-if (inputAreaEl && typeof ResizeObserver === 'function') {
-  const inputDockObserver = new ResizeObserver(() => updateInputDockHeight());
-  inputDockObserver.observe(inputAreaEl);
+function updateInputDockHeight() {
+  if (!mainContainer || !inputAreaEl) return;
+  const shouldFollow = messageRenderer.isNearBottom && messagesBottomDistance() < 180;
+  if (inputAreaEl.scrollHeight > inputAreaEl.clientHeight + 2) {
+    // In the extreme case (many queued messages plus attachments), keep the
+    // actual composer visible and let the auxiliary rows scroll inside the dock.
+    inputAreaEl.scrollTop = inputAreaEl.scrollHeight;
+  }
+  const inputHeight = inputAreaEl.offsetParent === null
+    ? 0
+    : Math.ceil(inputAreaEl.getBoundingClientRect().height);
+  const dialogHeight = !dialogContainerEl || dialogContainerEl.classList.contains('hidden')
+    ? 0
+    : Math.ceil(dialogContainerEl.getBoundingClientRect().height);
+  const toastHeight = !toastRegion
+    ? 0
+    : Math.min(Math.ceil(toastRegion.getBoundingClientRect().height), Math.floor(window.innerHeight * 0.34));
+  const overlayHeight = Math.max(dialogHeight, toastHeight);
+  const root = document.documentElement;
+  // These consumers do not share one ancestor (toasts live under <body>), so
+  // publish the measured geometry at the root rather than only on .main.
+  root.style.setProperty('--input-dock-height', `${Math.max(0, inputHeight)}px`);
+  root.style.setProperty('--dialog-tray-height', `${Math.max(0, dialogHeight)}px`);
+  root.style.setProperty('--toast-stack-height', `${Math.max(0, toastHeight)}px`);
+  root.style.setProperty('--overlay-stack-height', `${Math.max(0, overlayHeight)}px`);
+
+  if (shouldFollow) obstructionFollowPending = true;
+  requestAnimationFrame(() => {
+    if (obstructionFollowPending && messageRenderer.isNearBottom) {
+      obstructionFollowPending = false;
+      const previous = messagesContainer.style.scrollBehavior;
+      messagesContainer.style.scrollBehavior = 'auto';
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      messagesContainer.style.scrollBehavior = previous;
+      previousMessagesScrollTop = messagesContainer.scrollTop;
+    }
+    updateScrollBottomButton(messagesBottomDistance() < 12);
+  });
 }
+
+function scheduleObstructionLayoutUpdate() {
+  if (obstructionLayoutFrame !== null) return;
+  obstructionLayoutFrame = requestAnimationFrame(() => {
+    obstructionLayoutFrame = null;
+    updateInputDockHeight();
+  });
+}
+
+if (typeof ResizeObserver === 'function') {
+  const obstructionObserver = new ResizeObserver(scheduleObstructionLayoutUpdate);
+  if (inputAreaEl) obstructionObserver.observe(inputAreaEl);
+  if (dialogContainerEl) obstructionObserver.observe(dialogContainerEl);
+  if (toastRegion) obstructionObserver.observe(toastRegion);
+}
+window.addEventListener('resize', scheduleObstructionLayoutUpdate, { passive: true });
+window.visualViewport?.addEventListener('resize', scheduleObstructionLayoutUpdate, { passive: true });
 requestAnimationFrame(updateInputDockHeight);
 
 function sessionPageLocation(filePath) {
@@ -587,6 +651,14 @@ wsClient.addEventListener('rpcEvent', (e) => {
   handleRPCEvent(e.detail);
 });
 
+dialogContainerEl?.addEventListener('tau-local-dialog-response', (event) => {
+  const { id, response } = event.detail || {};
+  const resolve = localDialogResolvers.get(id);
+  if (!resolve) return;
+  localDialogResolvers.delete(id);
+  resolve(response || { cancelled: true });
+});
+
 wsClient.addEventListener('serverError', (e) => {
   showToast(humanizeError(e.detail.message), 'error', 5000);
 });
@@ -695,8 +767,21 @@ function handleCompactionEnd(event) {
   hideCompactButton();
 }
 
+function closeTransientOverlaysForOutput() {
+  closeCommandPalette();
+  closeModelDropdown();
+  closeThinkingMenu();
+  closePlanModeMenu();
+  if (contextViz) contextViz.classList.add('hidden');
+  if (isMobile() && !sidebarEl.classList.contains('collapsed')) {
+    sidebarEl.classList.add('collapsed');
+    sidebarOverlay.classList.remove('visible');
+  }
+}
+
 function handleAgentStart() {
   lastShownErrorKey = '';
+  closeTransientOverlaysForOutput();
   state.setStreaming(true);
   setWorkPhase('starting');
   updateUI();
@@ -745,6 +830,7 @@ function flushStreamingDeltas() {
     return;
   }
 
+  if (pendingThinkingDelta || pendingTextDelta) closeTransientOverlaysForOutput();
   if (pendingThinkingDelta) {
     messageRenderer.appendStreamingThinking(currentStreamingElement, pendingThinkingDelta);
     pendingThinkingDelta = '';
@@ -989,6 +1075,25 @@ function handleToolExecutionEnd(event) {
 
   toolCardRenderer.finalizeToolCard(toolCallId, result, isError);
   if (state.isStreaming) setWorkPhase(currentStreamingText ? 'writing' : 'starting');
+}
+
+let localDialogSequence = 0;
+const localDialogResolvers = new Map();
+
+function requestInlineDialog(method, options = {}) {
+  const id = `tau-local-dialog-${++localDialogSequence}`;
+  return new Promise((resolve) => {
+    localDialogResolvers.set(id, resolve);
+    const request = { id, method, ...options };
+    if (method === 'confirm') dialogHandler.showConfirm(request);
+    else if (method === 'input') dialogHandler.showInput(request);
+    else if (method === 'editor') dialogHandler.showEditor(request);
+    else if (method === 'select') dialogHandler.showSelect(request);
+    else {
+      localDialogResolvers.delete(id);
+      resolve({ cancelled: true });
+    }
+  });
 }
 
 function handleExtensionUIRequest(event) {
@@ -2397,8 +2502,12 @@ document.addEventListener('click', event => {
 // ═══════════════════════════════════════
 
 document.addEventListener('keydown', (e) => {
-  // Escape — Abort streaming, or close sidebar on mobile
+  // Escape — dismiss the top interaction first, then menus, then generation.
   if (e.key === 'Escape') {
+    if (dialogHandler.currentDialog) {
+      dialogHandler.cancelCurrentDialog();
+      return;
+    }
     if (planModeMenu && !planModeMenu.classList.contains('hidden')) {
       closePlanModeMenu();
       return;
@@ -2454,6 +2563,10 @@ function updateSidebarToggleIcon() {
 }
 
 function toggleSidebar() {
+  closeCommandPalette();
+  closeModelDropdown();
+  closeThinkingMenu();
+  closePlanModeMenu();
   sidebarEl.classList.toggle('collapsed');
   sidebarOverlay.classList.toggle('visible', !sidebarEl.classList.contains('collapsed') && isMobile());
   updateSidebarToggleIcon();
@@ -3595,11 +3708,18 @@ appearanceModeSelect?.addEventListener('change', () => {
 });
 
 async function openSettings() {
+  closeCommandPalette();
+  closeModelDropdown();
+  closeThinkingMenu();
+  closePlanModeMenu();
+  if (contextViz) contextViz.classList.add('hidden');
   refreshAutomaticTheme();
   refreshAppearanceControls();
   buildThemeGrid();
+  document.body.classList.add('settings-open');
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
+  scheduleObstructionLayoutUpdate();
 
   // Fetch current state for toggles
   try {
@@ -3644,6 +3764,8 @@ async function openSettings() {
 function closeSettings() {
   settingsPanel.classList.add('hidden');
   settingsOverlay.classList.add('hidden');
+  document.body.classList.remove('settings-open');
+  scheduleObstructionLayoutUpdate();
 }
 
 settingsBtn.addEventListener('click', () => openSettings());
@@ -3760,14 +3882,21 @@ async function editModelContext(model) {
   const relay = model.providerContextWindow ? formatContextSize(model.providerContextWindow) : t('ctxNone');
   const current = model.contextWindow ? formatContextSize(model.contextWindow) : t('ctxUnknown');
   const hint = [
-    t('ctxEditLead', { name: formatModelName(model) }),
     t('ctxEditCurrent', { value: current, source: source.short }),
     t('ctxEditOfficial', { value: official }),
     t('ctxEditRelay', { value: relay }),
     t('ctxEditHint'),
   ].join('\n');
-  const entered = window.prompt(hint, model.contextWindow ? String(model.contextWindow) : '');
-  if (entered === null) return;
+  closeModelDropdown();
+  const result = await requestInlineDialog('input', {
+    title: t('ctxEditLead', { name: formatModelName(model) }),
+    message: hint,
+    placeholder: t('ctxEditHint'),
+    prefill: model.contextWindow ? String(model.contextWindow) : '',
+    allowEmpty: true,
+  });
+  if (result.cancelled) return;
+  const entered = result.value ?? '';
   const reset = !String(entered).trim();
   const nextWindow = reset ? null : parseContextInput(entered);
   if (!reset && !Number.isFinite(nextWindow)) {
@@ -3948,7 +4077,23 @@ async function deleteRelayFromEditor() {
   const form = readRelayEditor();
   if (!form.id) return;
   const name = form.name || form.id;
-  if (!confirm(t('confirmDelete', { name }))) return;
+  const providerSnapshot = relayProviders.find((item) => item.id === form.id) || {
+    id: form.id,
+    name: form.name,
+    baseUrl: form.baseUrl,
+    api: form.api,
+    apiKeySet: !form.apiKey,
+  };
+  closeModelDropdown();
+  const decision = await requestInlineDialog('confirm', {
+    title: t('confirmPlease'),
+    message: t('confirmDelete', { name }),
+  });
+  if (!decision.confirmed) {
+    showRelayEditor(providerSnapshot);
+    return;
+  }
+  showRelayEditor(providerSnapshot);
   const deleteBtn = document.getElementById('relay-delete-btn');
   const saveBtn = document.getElementById('relay-save-btn');
   const testBtn = document.getElementById('relay-test-btn');

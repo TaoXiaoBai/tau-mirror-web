@@ -1530,9 +1530,26 @@ textarea {
 }
 
 .settings-overlay {
-  background: rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: rgba(0, 0, 0, 0.08);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+@media (min-width: 769px) {
+  body.settings-open .app-layout {
+    padding-right: min(420px, 38vw);
+    transition: padding-right 0.22s var(--ease);
+  }
+
+  body.settings-open .settings-panel,
+  body.settings-open .settings-overlay {
+    width: min(420px, 38vw);
+  }
+
+  .settings-overlay {
+    left: auto;
+    background: transparent;
+  }
 }
 
 .settings-header {
@@ -2586,5 +2603,170 @@ textarea {
 
   .model-provider-models {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- obstruction-safe conversation viewport ----------
+   The composer is absolutely positioned and can grow for attachments, queued
+   messages, history actions, and multiline input. Reserve its measured height
+   instead of relying on the old fixed 122px padding. Extension UI prompts use
+   a non-modal interaction tray above the composer, so Pi can keep streaming
+   visibly while waiting for a select / confirm / input response. */
+.input-area {
+  max-height: min(52dvh, 460px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.messages {
+  padding-bottom: calc(
+    var(--input-dock-height, 78px)
+    + var(--dialog-tray-height, 0px)
+    + 28px
+    + env(safe-area-inset-bottom)
+  );
+  scroll-padding-bottom: calc(
+    var(--input-dock-height, 78px)
+    + var(--dialog-tray-height, 0px)
+    + 28px
+    + env(safe-area-inset-bottom)
+  );
+}
+
+#dialog-container {
+  position: absolute;
+  inset: auto 0 var(--input-dock-height, 78px) 0;
+  z-index: 25;
+  display: flex;
+  justify-content: center;
+  padding: 8px max(18px, calc((100% - var(--tau-readable-width)) / 2));
+  background: transparent;
+  pointer-events: none;
+  animation: none;
+}
+
+#dialog-container.hidden {
+  display: none !important;
+}
+
+#dialog-container .dialog {
+  width: min(100%, var(--tau-readable-width));
+  max-width: var(--tau-readable-width);
+  max-height: min(44dvh, 420px, calc(100dvh - var(--input-dock-height, 78px) - 64px));
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 14px;
+  background: var(--tau-surface-strong);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
+}
+
+#dialog-container .dialog-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+#dialog-container .dialog-message {
+  max-height: 16dvh;
+  margin-bottom: 10px;
+  overflow: auto;
+}
+
+#dialog-container .dialog-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: min(24dvh, 220px);
+  margin-bottom: 10px;
+  overflow-y: auto;
+}
+
+#dialog-container .dialog-option {
+  min-width: 0;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+
+#dialog-container .dialog-input,
+#dialog-container .dialog-textarea {
+  margin-bottom: 10px;
+}
+
+#dialog-container .dialog-textarea {
+  min-height: 90px;
+  max-height: 24dvh;
+}
+
+#dialog-container .dialog-actions {
+  position: sticky;
+  bottom: -14px;
+  margin: 0 -14px -14px;
+  padding: 9px 14px 14px;
+  background: var(--tau-surface-strong);
+}
+
+.scroll-bottom-btn {
+  bottom: calc(
+    var(--input-dock-height, 78px)
+    + var(--dialog-tray-height, 0px)
+    + 12px
+  );
+}
+
+.toast-region {
+  top: calc(54px + env(safe-area-inset-top));
+  bottom: auto;
+  max-height: min(34dvh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 768px) {
+  .input-area {
+    max-height: 48dvh;
+  }
+
+  .messages {
+    padding-bottom: calc(
+      var(--input-dock-height, 70px)
+      + var(--dialog-tray-height, 0px)
+      + 18px
+      + env(safe-area-inset-bottom)
+    );
+    scroll-padding-bottom: calc(
+      var(--input-dock-height, 70px)
+      + var(--dialog-tray-height, 0px)
+      + 18px
+      + env(safe-area-inset-bottom)
+    );
+  }
+
+  #dialog-container {
+    padding: 6px 9px;
+  }
+
+  #dialog-container .dialog {
+    max-height: min(46dvh, 390px, calc(100dvh - var(--input-dock-height, 70px) - 54px));
+    padding: 12px;
+    border-radius: 13px;
+  }
+
+  #dialog-container .dialog-options {
+    grid-template-columns: 1fr;
+    max-height: 25dvh;
+  }
+
+  #dialog-container .dialog-actions {
+    bottom: -12px;
+    margin: 0 -12px -12px;
+    padding: 8px 12px 12px;
+  }
+
+  .toast-region {
+    top: calc(48px + env(safe-area-inset-top));
+    bottom: auto;
   }
 }

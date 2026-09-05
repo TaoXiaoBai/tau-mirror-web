@@ -1,7 +1,7 @@
 // Tau Service Worker — minimal, just enables PWA install
 // No aggressive caching since Tau connects to a live local server
 
-const CACHE_NAME = 'tau-v6';
+const CACHE_NAME = 'tau-v11';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

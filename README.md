@@ -67,6 +67,7 @@ Run `/qr` in Pi and scan the displayed QR code. The phone must be able to reach 
 - Thinking blocks and tool cards
 - Errors displayed directly in the conversation
 - Queued follow-up messages while Pi is working
+- Output-safe prompts and panels that dynamically leave room for the latest response
 - Jump-to-latest control with stable history scrolling
 - Lazy loading for older history and expensive content
 

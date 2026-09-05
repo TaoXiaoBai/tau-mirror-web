@@ -10,6 +10,9 @@ export class SessionSidebar {
     this.onSessionSelect = onSessionSelect;
     this.onSessionDeleted = options.onSessionDeleted || null;
     this.onSessionRenamed = options.onSessionRenamed || null;
+    this.confirmAction = typeof options.confirmAction === 'function'
+      ? options.confirmAction
+      : async () => false;
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -362,7 +365,7 @@ export class SessionSidebar {
   async deleteSession(session, itemEl) {
     if (!session?.filePath) return false;
     const name = this.sessionLabel(session);
-    if (!confirm(t('deleteSessionConfirm', { name }))) return false;
+    if (!await this.confirmAction(t('deleteSessionTitle'), t('deleteSessionConfirm', { name }))) return false;
     try {
       const res = await fetch('/api/sessions/delete', {
         method: 'POST',

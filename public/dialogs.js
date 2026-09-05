@@ -5,20 +5,25 @@
 import { t } from './i18n.js';
 
 export class DialogHandler {
-  constructor(container, wsClient) {
+  constructor(container, wsClient, options = {}) {
     this.container = container;
     this.wsClient = wsClient;
     this.currentDialog = null;
     this.timeoutId = null;
+    this.onLayoutChange = typeof options.onLayoutChange === 'function'
+      ? options.onLayoutChange
+      : () => {};
   }
 
   showSelect(request) {
-    this.clearCurrentDialog();
+    this.cancelCurrentDialog();
 
     const { id, title, options, timeout } = request;
 
     const dialog = document.createElement('div');
-    dialog.className = 'dialog';
+    dialog.className = 'dialog dialog-select';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'false');
     dialog.innerHTML = `
       <div class="dialog-title">${this.escapeHtml(title || t('selectPlease'))}</div>
       <div class="dialog-options" id="dialog-options"></div>
@@ -47,12 +52,14 @@ export class DialogHandler {
   }
 
   showConfirm(request) {
-    this.clearCurrentDialog();
+    this.cancelCurrentDialog();
 
     const { id, title, message, timeout } = request;
 
     const dialog = document.createElement('div');
-    dialog.className = 'dialog';
+    dialog.className = 'dialog dialog-confirm';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'false');
     dialog.innerHTML = `
       <div class="dialog-title">${this.escapeHtml(title || t('confirmPlease'))}</div>
       ${message ? `<div class="dialog-message">${this.escapeHtml(message)}</div>` : ''}
@@ -74,15 +81,18 @@ export class DialogHandler {
   }
 
   showInput(request) {
-    this.clearCurrentDialog();
+    this.cancelCurrentDialog();
 
-    const { id, title, placeholder, timeout } = request;
+    const { id, title, message, placeholder, prefill, allowEmpty, timeout } = request;
 
     const dialog = document.createElement('div');
-    dialog.className = 'dialog';
+    dialog.className = 'dialog dialog-input-prompt';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'false');
     dialog.innerHTML = `
       <div class="dialog-title">${this.escapeHtml(title || t('inputPlease'))}</div>
-      <input type="text" class="dialog-input" id="dialog-input" placeholder="${this.escapeHtml(placeholder || '')}" />
+      ${message ? `<div class="dialog-message">${this.escapeHtml(message)}</div>` : ''}
+      <input type="text" class="dialog-input" id="dialog-input" placeholder="${this.escapeHtml(placeholder || '')}" value="${this.escapeHtml(prefill || '')}" />
       <div class="dialog-actions">
         <button id="dialog-cancel">${t('cancel')}</button>
         <button id="dialog-submit">${t('submit')}</button>
@@ -93,7 +103,7 @@ export class DialogHandler {
     
     const submit = () => {
       const value = input.value.trim();
-      this.respond(id, value ? { value } : { cancelled: true });
+      this.respond(id, value || allowEmpty ? { value } : { cancelled: true });
     };
 
     input.addEventListener('keypress', (e) => {
@@ -106,18 +116,23 @@ export class DialogHandler {
     };
 
     this.showDialog(dialog, timeout, id);
-    
-    // Focus input after a short delay
-    setTimeout(() => input.focus(), 100);
+
+    // Focus/select after layout settles without jumping the message viewport.
+    setTimeout(() => {
+      input.focus({ preventScroll: true });
+      input.select();
+    }, 100);
   }
 
   showEditor(request) {
-    this.clearCurrentDialog();
+    this.cancelCurrentDialog();
 
     const { id, title, prefill, timeout } = request;
 
     const dialog = document.createElement('div');
-    dialog.className = 'dialog';
+    dialog.className = 'dialog dialog-editor';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'false');
     dialog.innerHTML = `
       <div class="dialog-title">${this.escapeHtml(title || t('editPlease'))}</div>
       <textarea class="dialog-textarea" id="dialog-textarea">${this.escapeHtml(prefill || '')}</textarea>
@@ -139,9 +154,9 @@ export class DialogHandler {
     };
 
     this.showDialog(dialog, timeout, id);
-    
-    // Focus textarea after a short delay
-    setTimeout(() => textarea.focus(), 100);
+
+    // Focus textarea after a short delay without moving the chat scroller.
+    setTimeout(() => textarea.focus({ preventScroll: true }), 100);
   }
 
   showNotification(request) {
@@ -165,9 +180,10 @@ export class DialogHandler {
 
   showDialog(dialogElement, timeout, requestId) {
     this.currentDialog = dialogElement;
-    this.container.innerHTML = '';
-    this.container.appendChild(dialogElement);
+    this.container.replaceChildren(dialogElement);
     this.container.classList.remove('hidden');
+    this.container.dataset.requestId = String(requestId || '');
+    this.onLayoutChange(true);
 
     // Set up timeout if specified
     if (timeout) {
@@ -177,19 +193,37 @@ export class DialogHandler {
     }
   }
 
+  cancelCurrentDialog() {
+    const id = this.container.dataset.requestId;
+    if (this.currentDialog && id) {
+      this.respond(id, { cancelled: true });
+      return true;
+    }
+    this.clearCurrentDialog();
+    return false;
+  }
+
   clearCurrentDialog() {
     if (this.timeoutId) {
       clearTimeout(this.timeoutId);
       this.timeoutId = null;
     }
     
-    this.container.innerHTML = '';
+    this.container.replaceChildren();
     this.container.classList.add('hidden');
+    delete this.container.dataset.requestId;
     this.currentDialog = null;
+    this.onLayoutChange(false);
   }
 
   respond(id, response) {
     this.clearCurrentDialog();
+    if (String(id || '').startsWith('tau-local-dialog-')) {
+      this.container.dispatchEvent(new CustomEvent('tau-local-dialog-response', {
+        detail: { id, response },
+      }));
+      return;
+    }
     this.wsClient.send({
       type: 'extension_ui_response',
       id,
